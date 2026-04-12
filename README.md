@@ -48,54 +48,91 @@ We will use the DeepSeek-R1 [tech report](https://github.com/deepseek-ai/DeepSee
 
 ## Installation
 
-> [!CAUTION]
-> Libraries rely on CUDA 12.4. If you see errors related to segmentation faults, double check the version your system is running with `nvcc --version`.
+This project is easiest to run inside a Python 3.11 environment with GPU-enabled PyTorch.
 
-To run the code in this project, first, create a Python virtual environment using e.g. `uv`.
-To install `uv`, follow the [UV Installation Guide](https://docs.astral.sh/uv/getting-started/installation/).
+### 1) Create and activate an environment
 
-
-> [!NOTE]
-> As a shortcut, run `make install` to setup development libraries (spelled out below). Afterwards, if everything is setup correctly you can try out the Open-R1 models.
-
-
-```shell
-uv venv openr1 --python 3.11 && source openr1/bin/activate && uv pip install --upgrade pip
+**Linux / WSL**
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 ```
 
-> [!TIP]
-> For Hugging Face cluster users, add `export UV_LINK_MODE=copy` to your `.bashrc` to suppress cache warnings from `uv`
-
-Next, install vLLM and FlashAttention:
-
-```shell
-uv pip install vllm==0.8.5.post1
-uv pip install setuptools && uv pip install flash-attn --no-build-isolation
+**Windows PowerShell**
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 ```
 
-This will also install PyTorch `v2.6.0` and it is **very important** to use this version since the vLLM binaries are compiled for it. You can then install the remaining dependencies for your specific use case via `pip install -e .[LIST OF MODES]`. For most contributors, we recommend:
+### 2) Install dependencies
 
-```shell
-GIT_LFS_SKIP_SMUDGE=1 uv pip install -e ".[dev]"
+For local SFT, install the core packages used by this repo:
+
+**Linux / WSL**
+```bash
+pip install torch transformers datasets accelerate trl peft safetensors
+pip install wandb
+pip install -e .
 ```
 
-Next, log into your Hugging Face and Weights and Biases accounts as follows:
-
-```shell
-huggingface-cli login
-wandb login
+**Windows PowerShell**
+```powershell
+pip install torch transformers datasets accelerate trl peft safetensors
+pip install wandb
+pip install -e .
 ```
 
-Finally, check whether your system has Git LFS installed so that you can load and push models/datasets to the Hugging Face Hub:
+> If you want GPU training, make sure you install a CUDA-enabled PyTorch build that matches your system. If `torch.cuda.is_available()` is `False`, you currently have a CPU-only build.
 
-```shell
-git-lfs --version
+### 3) Prepare data
+
+This repo will load the local parquet dataset automatically if the files exist under `data/`.
+
+Make sure the directory contains the downloaded parquet files for `open-r1/Mixture-of-Thoughts`.
+
+### 4) Run local SFT
+
+The local Qwen recipe uses:
+- model: `Qwen/Qwen2.5-7B-Instruct`
+- dataset: `open-r1/Mixture-of-Thoughts`
+- output dir: `model/Qwen2.5-7B-Instruct-sft`
+
+Use the scripts from the repository root.
+
+**Windows PowerShell**
+```powershell
+.\scripts\run_qwen2.5_sft.ps1
 ```
 
-If it isn't installed, run:
+**Linux / WSL**
+```bash
+bash scripts/run_qwen2.5_sft.sh
+```
 
-```shell
-sudo apt-get install git-lfs
+If you want to override settings on the command line, append extra args after `--`:
+
+**Windows PowerShell**
+```powershell
+.\scripts\run_qwen2.5_sft.ps1 -- --num_train_epochs 1 --per_device_train_batch_size 1
+```
+
+**Linux / WSL**
+```bash
+bash scripts/run_qwen2.5_sft.sh -- --num_train_epochs 1 --per_device_train_batch_size 1
+```
+
+### 5) Optional checks
+
+Confirm CUDA is available:
+```bash
+python -c "import torch; print(torch.cuda.is_available()); print(torch.version.cuda)"
+```
+
+Confirm the local dataset files are present:
+```bash
+ls data/*.parquet
 ```
 
 ## Training models
