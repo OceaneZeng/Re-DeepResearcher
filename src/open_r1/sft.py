@@ -33,8 +33,16 @@ accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml src/open_r
     --output_dir data/OpenR1-Distill-7B
 """
 
-import logging
+# Ensure UTF-8-related environment variables are set early on Windows so
+# packages that read text files during import (e.g. trl reading Jinja templates)
+# don't try to decode as the system ANSI code page (e.g., GBK) and fail.
 import os
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("LANG", "en_US.UTF-8")
+
+import logging
+import os as _os
 import sys
 
 import datasets
@@ -46,7 +54,21 @@ from open_r1.configs import ScriptArguments, SFTConfig
 from open_r1.utils import get_dataset, get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config, setup_chat_format
+
+from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config
+try:
+    from trl import setup_chat_format
+except Exception:
+    import warnings
+
+    def setup_chat_format(model, tokenizer, format: str = "chatml"):
+        warnings.warn(
+            "trl.setup_chat_format not found in installed trl version; proceeding without modifying model/tokenizer chat format."
+        )
+        # Ensure tokenizer has a chat_template attribute to avoid attribute errors later
+        if not hasattr(tokenizer, "chat_template"):
+            setattr(tokenizer, "chat_template", None)
+        return model, tokenizer
 
 
 logger = logging.getLogger(__name__)
@@ -166,4 +188,37 @@ def main(script_args, training_args, model_args):
 if __name__ == "__main__":
     parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+
+    # Normalize dataset selection from the config file: require one of the two supported forms.
+    # This keeps the config file as the source of truth while tolerating parser/version quirks.
+    if getattr(script_args, "dataset_name", None) is None and getattr(script_args, "dataset_mixture", None) is None:
+        raise ValueError(
+            "Either `dataset_name` or `dataset_mixture` must be provided in the config file. "
+            "For local parquet-backed SFT, set dataset_name: open-r1/Mixture-of-Thoughts."
+        )
+
+    # Provide conservative local defaults when running locally and arguments are omitted.
+    # Default model to a Qwen 7B instruct family if not specified.
+    if getattr(model_args, "model_name_or_path", None) is None:
+        model_args.model_name_or_path = "open-r1/Qwen2.5-7B-Instruct"
+        print(f"Defaulting model to {model_args.model_name_or_path}")
+
+    # If a local model folder exists in ./models/<name>, prefer it for offline runs.
+    try:
+        model_name = model_args.model_name_or_path
+        model_basename = os.path.basename(model_name)
+        local_model_paths = [
+            os.path.join(os.getcwd(), "models", model_basename),
+            os.path.join(os.getcwd(), model_basename),
+            os.path.join(os.getcwd(), "models", model_name.replace("/", "_")),
+        ]
+        for p in local_model_paths:
+            if os.path.isdir(p):
+                print(f"Found local model directory, using local model at: {p}")
+                model_args.model_name_or_path = p
+                break
+    except Exception:
+        # non-fatal; fall back to provided model_name_or_path
+        pass
+
     main(script_args, training_args, model_args)
