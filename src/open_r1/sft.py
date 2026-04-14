@@ -50,6 +50,9 @@ import transformers
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
+# New imports for runtime checks
+import torch
+
 from open_r1.configs import ScriptArguments, SFTConfig
 from open_r1.utils import get_dataset, get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
@@ -74,8 +77,63 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+def sanity_checks(training_args):
+    """Perform runtime checks to avoid common multi-process / ROCm pitfalls.
+
+    - Ensure number of accelerate processes does not exceed available GPUs.
+    - Detect whether Torch is a ROCm build and warn about CUDA-only libs like bitsandbytes.
+    """
+    # Detect available devices
+    try:
+        gpu_count = 0
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+        else:
+            # On ROCm builds torch.cuda.is_available() should still be True; fallback check for HIP
+            if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+                # Some ROCm builds still expose CUDA API compat; attempt device_count
+                try:
+                    gpu_count = torch.cuda.device_count()
+                except Exception:
+                    gpu_count = 0
+        logger.info(f"Detected GPU count: {gpu_count}")
+    except Exception as e:
+        logger.warning(f"Could not query CUDA/ROCm device count: {e}")
+        gpu_count = 0
+
+    # training_args.num_processes is set by accelerate; when running under accelerate the
+    # visible world size is training_args.process_index or training_args.local_processes
+    # but we check for training_args._n_processes if available; otherwise rely on environment.
+    try:
+        requested_procs = getattr(training_args, 'num_processes', None) or int(os.environ.get('WORLD_SIZE', '1'))
+    except Exception:
+        requested_procs = 1
+
+    if requested_procs > max(1, gpu_count):
+        raise RuntimeError(
+            f"Accelerate requested {requested_procs} processes but only {gpu_count} GPU(s) detected.\n"
+            "On single-GPU ROCm DTK please use an accelerate config with num_processes=1 (e.g., recipes/accelerate_configs/ddp.yaml).")
+
+    # Warn if bitsandbytes requested on ROCm or when Torch build is ROCm
+    try:
+        is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+        if is_rocm:
+            logger.info(f"Detected ROCm-enabled PyTorch: {torch.__version__} (hip={torch.version.hip})")
+            # bitsandbytes is CUDA-only in many builds
+            try:
+                import bitsandbytes as bnb  # type: ignore
+                logger.warning("bitsandbytes appears installed — it requires CUDA; on ROCm this may not work.")
+            except Exception:
+                logger.info("bitsandbytes not installed (recommended for ROCm). If you need 8-bit, use a CPU fallback or CUDA node.")
+    except Exception:
+        pass
+
+
 def main(script_args, training_args, model_args):
     set_seed(training_args.seed)
+
+    # Run sanity checks before heavy imports/initialization
+    sanity_checks(training_args)
 
     ###############
     # Setup logging

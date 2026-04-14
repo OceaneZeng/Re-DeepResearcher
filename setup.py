@@ -41,8 +41,9 @@ if stale_egg_info.exists():
 # IMPORTANT: all dependencies should be listed here with their version requirements, if any.
 #   * If a dependency is fast-moving (e.g. trl), pin to the exact version
 _deps = [
+    # "accelerate==1.4.0",
     "accelerate==1.4.0",
-    "bitsandbytes>=0.43.0",
+    # "bitsandbytes>=0.43.0",  # moved to optional extras (CUDA-only)
     "datasets>=3.2.0",
     "deepspeed==0.16.8",
     "distilabel[vllm,ray,openai]>=1.5.2",
@@ -67,7 +68,7 @@ _deps = [
     "ruff>=0.9.0",
     "safetensors>=0.3.3",
     "sentencepiece>=0.1.99",
-    "torch==2.6.0",
+    # "torch==2.6.0",  # moved to optional extras so ROCm users can install ROCm wheel themselves
     "transformers==4.52.3",
     "trl[vllm]==0.18.0",
     "wandb>=0.19.1",
@@ -76,13 +77,18 @@ _deps = [
     "pandas>=2.2.3",
 ]
 
-# this is a lookup table with items like:
-#
-# tokenizers: "tokenizers==0.9.4"
-# packaging: "packaging"
-#
-# some of the values are versioned whereas others aren't.
-deps = {b: a for a, b in (re.findall(r"^(([^!=<>~ \[\]]+)(?:\[[^\]]+\])?(?:[!=<>~ ].*)?$)", x)[0] for x in _deps)}
+# Build a mapping from short package key -> full spec in a simple, robust way.
+# Avoids a single complex regex to silence lint warnings and improves readability.
+deps = {}
+for full_spec in _deps:
+    # Extract package name up to the first special char (one of ' ', '[', '!', '=', '<', '>', '~')
+    m = re.match(r"^([^\s\[!=<>~]+)", full_spec)
+    if m:
+        pkg = m.group(1)
+    else:
+        # Fallback: use the entire spec as key (shouldn't normally happen)
+        pkg = full_spec
+    deps[pkg] = full_spec
 
 
 def deps_list(*pkgs):
@@ -91,19 +97,44 @@ def deps_list(*pkgs):
 
 extras = {}
 extras["tests"] = deps_list("pytest", "parameterized", "math-verify", "jieba")
-extras["torch"] = deps_list("torch")
+# removed extras['torch'] because torch is now provided as an optional extra (see below)
 extras["quality"] = deps_list("ruff", "isort", "flake8")
 extras["code"] = deps_list("e2b-code-interpreter", "python-dotenv", "morphcloud", "jieba", "pandas", "aiofiles")
 extras["eval"] = deps_list("lighteval", "math-verify")
 extras["dev"] = extras["quality"] + extras["tests"] + extras["eval"] + extras["code"]
 
+# Optional extras for different device stacks.
+# Note: ROCm users should install the matching ROCm PyTorch wheel first (pip from the PyTorch ROCm index)
+# and then `pip install .[rocm]`. bitsandbytes is CUDA-only in most published builds, so it's provided
+# behind the 'cuda' and 'bnb' extras only.
+extras["cuda"] = [
+    "torch>=2.6.0,<3.0",
+    "bitsandbytes>=0.43.0",
+]
+extras["rocm"] = [
+    "torch>=2.6.0,<3.0",
+]
+extras["bnb"] = [
+    "bitsandbytes>=0.43.0",
+]
+# Move deepspeed to an optional extra to avoid pulling heavy binaries for users who don't need it.
+extras["deepspeed"] = [deps["deepspeed"]]
+# Aggregate common full set
+extras["full"] = list({
+    *extras.get("dev", []),
+    *extras.get("cuda", []),
+    *extras.get("rocm", []),
+    *extras.get("bnb", []),
+    *extras.get("deepspeed", []),
+})
+
 # core dependencies shared across the whole project - keep this to a bare minimum :)
 install_requires = [
     deps["accelerate"],
-    deps["bitsandbytes"],
+    # deps["bitsandbytes"],  # moved to optional extras (CUDA-only)
     deps["einops"],
     deps["datasets"],
-    deps["deepspeed"],
+    # deps["deepspeed"],  # moved to extras to avoid heavy default install
     deps["hf_transfer"],
     deps["huggingface-hub"],
     deps["langdetect"],

@@ -1,13 +1,17 @@
 compute_environment: LOCAL_MACHINE
 debug: false
+# For single-GPU ROCm DTK set distributed_type to MULTI_GPU but use a single process
 distributed_type: MULTI_GPU
 downcast_bf16: 'no'
-gpu_ids: all
+enable_cpu_affinity: false
+# On a single physical GPU set gpu_ids to the single device index (0) and num_processes to 1
+gpu_ids: 0
 machine_rank: 0
 main_training_function: main
 mixed_precision: bf16
 num_machines: 1
-num_processes: 8
+# IMPORTANT: single GPU -> single process. Prevents accelerate from spawning more processes than GPUs which can cause crashes.
+num_processes: 1
 rdzv_backend: static
 same_network: true
 tpu_env: []
