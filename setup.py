@@ -17,10 +17,59 @@
 
 import re
 import shutil
+import os
 from pathlib import Path
 
 from setuptools import find_packages, setup
 
+# If a ROCm-built torch is already installed, avoid letting pip silently replace it.
+# IMPORTANT: Do NOT hard-fail during metadata generation/build steps, otherwise
+# `pip install -e . --no-deps` and other build-frontend operations will fail.
+try:
+    _allow_replace = os.environ.get("OPENR1_ALLOW_TORCH_REPLACE", "0") == "1"
+    _skip_guard = os.environ.get("OPENR1_SKIP_TORCH_GUARD", "0") == "1"
+
+    if not _skip_guard:
+        import importlib.util
+
+        torch_spec = importlib.util.find_spec("torch")
+        if torch_spec is not None:
+            import torch as _torch_inst
+
+            _is_rocm_torch = hasattr(_torch_inst.version, "hip") and _torch_inst.version.hip is not None
+            if _is_rocm_torch and not _allow_replace:
+                # Only warn. Editable installs with --no-deps should still work.
+                print(
+                    "\n[open-r1] Detected ROCm-built PyTorch in this environment. "
+                    "To avoid pip replacing it, ALWAYS install this project with --no-deps (recommended):\n"
+                    "  pip install -e . --no-deps\n"
+                    "If you really want pip to replace torch, set OPENR1_ALLOW_TORCH_REPLACE=1.\n"
+                )
+except Exception:
+    # Best-effort guard; never break installation due to probing issues.
+    pass
+
+# ROCm/DTK environment guidance: detect common DTK/ROCm install paths and print clear instructions
+# to users who try to `pip install -e .` on a ROCm machine with an incompatible CUDA torch wheel.
+try:
+    _rocm_hint_paths = ["/opt/rocm", "/opt/dtk", "/opt/dtk-25.04.2"]
+    _rocm_present = any(Path(p).exists() for p in _rocm_hint_paths) or bool(Path("/opt/dtk").exists()) or bool(Path("/opt/rocm").exists())
+    if _rocm_present:
+        # Provide a concise, actionable hint. We avoid network lookups during setup.
+        print("\n*** DETECTED ROCm/DTK RUNTIME ON HOST ***")
+        print("It looks like this machine has ROCm/DTK libraries installed (e.g., /opt/dtk or /opt/rocm).\n"
+              "To avoid native crashes, DO NOT install CUDA-built PyTorch wheels on ROCm nodes.\n"
+              "Recommended quick steps:\n"
+              "  1) Uninstall any existing CUDA torch: pip uninstall -y torch torchvision torchaudio\n"
+              "  2) Install a ROCm-matching wheel. Example (adjust rocmX.Y and torch version to match your DTK):\n"
+              "       pip install --index-url https://download.pytorch.org/whl/rocm5.6 \\\n"
+              "           torch==2.2.2+rocm5.6 torchvision --extra-index-url https://download.pytorch.org/whl/rocm5.6\n"
+              "     (If rocm5.6 wheels are not suitable for your DTK, ask your admin or check https://download.pytorch.org/whl/)\n"
+              "  3) After installing ROCm PyTorch, reinstall this project: pip install -e .\n"
+              "If you cannot install ROCm wheels via pip, ask your cluster admin for the recommended wheel/module.\n")
+except Exception:
+    # Non-fatal: avoid failing setup due to our hint logic
+    pass
 
 # Remove stale open_r1.egg-info directory to avoid https://github.com/pypa/pip/issues/5466
 stale_egg_info = Path(__file__).parent / "open_r1.egg-info"
@@ -41,40 +90,39 @@ if stale_egg_info.exists():
 # IMPORTANT: all dependencies should be listed here with their version requirements, if any.
 #   * If a dependency is fast-moving (e.g. trl), pin to the exact version
 _deps = [
-    # "accelerate==1.4.0",
-    "accelerate==1.4.0",
-    # "bitsandbytes>=0.43.0",  # moved to optional extras (CUDA-only)
+    # Keep installer lightweight; ROCm/Qwen3.5 runtime is managed manually in the venv.
+    "accelerate>=1.4.0",
+    "numpy<2.0.0",
     "datasets>=3.2.0",
-    "deepspeed==0.16.8",
-    "distilabel[vllm,ray,openai]>=1.5.2",
-    "e2b-code-interpreter>=1.0.5",
     "einops>=0.8.0",
-    "flake8>=6.0.0",
     "hf_transfer>=0.1.4",
-    "huggingface-hub[cli,hf_xet]>=0.30.2,<1.0",
-    "isort>=5.12.0",
-    "jieba",  # Needed for Chinese language support
-    "langdetect",  # Needed for LightEval's extended tasks
+    "huggingface-hub[cli,hf_xet]>=0.31.0,<2.0",
+    "langdetect",
     "latex2sympy2_extended>=1.0.6",
     "liger-kernel>=0.5.10",
-    "lighteval @ git+https://github.com/huggingface/lighteval.git@d3da6b9bbf38104c8b5e1acc86f83541f9a502d1",  # Critical bug fix for tokenizer revisions: https://github.com/huggingface/lighteval/pull/721
-    "math-verify==0.5.2",  # Used for math verification in grpo
-    "morphcloud==0.1.67",
+    "math-verify==0.5.2",
     "packaging>=23.0",
-    "parameterized>=0.9.0",
     "peft>=0.14.0",
-    "pytest",
-    "python-dotenv",
-    "ruff>=0.9.0",
     "safetensors>=0.3.3",
     "sentencepiece>=0.1.99",
-    # "torch==2.6.0",  # moved to optional extras so ROCm users can install ROCm wheel themselves
-    "transformers==4.52.3",
-    "trl[vllm]==0.18.0",
     "wandb>=0.19.1",
     "async-lru>=2.0.5",
     "aiofiles>=24.1.0",
     "pandas>=2.2.3",
+    # Center versions around transformers 5.2.0; install in the environment if you use training scripts.
+    "transformers==5.2.0",
+    # Keep transformers/trl out of install_requires for ROCm/Qwen3.5; install them explicitly in the venv.
+    "pytest",
+    "parameterized>=0.9.0",
+    "ruff>=0.9.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "e2b-code-interpreter>=1.0.5",
+    "python-dotenv",
+    "morphcloud==0.1.67",
+    "jieba",
+    "lighteval @ git+https://github.com/huggingface/lighteval.git@d3da6b9bbf38104c8b5e1acc86f83541f9a502d1",
+    "deepspeed==0.16.8",
 ]
 
 # Build a mapping from short package key -> full spec in a simple, robust way.
@@ -92,7 +140,21 @@ for full_spec in _deps:
 
 
 def deps_list(*pkgs):
-    return [deps[pkg] for pkg in pkgs]
+    out = []
+    missing = []
+    for pkg in pkgs:
+        spec = deps.get(pkg)
+        if spec is None:
+            missing.append(pkg)
+            continue
+        out.append(spec)
+    if missing:
+        print(
+            "[open-r1] Warning: extras reference missing dependency keys: "
+            + ", ".join(missing)
+            + ". They will be skipped."
+        )
+    return out
 
 
 extras = {}
@@ -111,8 +173,9 @@ extras["cuda"] = [
     "torch>=2.6.0,<3.0",
     "bitsandbytes>=0.43.0",
 ]
+# ROCm users: This extra is intentionally left empty to avoid pip auto-installing non-ROCm torch wheels.
+# Please install the correct ROCm PyTorch wheel manually before using this extra.
 extras["rocm"] = [
-    "torch>=2.6.0,<3.0",
 ]
 extras["bnb"] = [
     "bitsandbytes>=0.43.0",
@@ -131,23 +194,23 @@ extras["full"] = list({
 # core dependencies shared across the whole project - keep this to a bare minimum :)
 install_requires = [
     deps["accelerate"],
-    # deps["bitsandbytes"],  # moved to optional extras (CUDA-only)
+    deps["numpy"],
     deps["einops"],
     deps["datasets"],
-    # deps["deepspeed"],  # moved to extras to avoid heavy default install
     deps["hf_transfer"],
     deps["huggingface-hub"],
     deps["langdetect"],
     deps["latex2sympy2_extended"],
     deps["math-verify"],
     deps["liger-kernel"],
-    deps["packaging"],  # utilities from PyPA to e.g., compare versions
+    deps["packaging"],
     deps["safetensors"],
     deps["sentencepiece"],
-    deps["transformers"],
-    deps["trl"],
     deps["wandb"],
     deps["async-lru"],
+    deps["pandas"],
+    # Core training scripts depend on transformers; pin to the requested version.
+    deps["transformers"],
 ]
 
 setup(

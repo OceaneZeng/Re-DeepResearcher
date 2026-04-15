@@ -1,11 +1,11 @@
 compute_environment: LOCAL_MACHINE
 debug: false
-# For single-GPU ROCm DTK set distributed_type to MULTI_GPU but use a single process
-distributed_type: MULTI_GPU
+# For single-GPU ROCm DTK use single-process mode to avoid multi-GPU validation
+distributed_type: NO
 downcast_bf16: 'no'
 enable_cpu_affinity: false
 # On a single physical GPU set gpu_ids to the single device index (0) and num_processes to 1
-gpu_ids: 0
+gpu_ids: "0"
 machine_rank: 0
 main_training_function: main
 mixed_precision: bf16

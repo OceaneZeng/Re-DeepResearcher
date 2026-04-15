@@ -2,7 +2,8 @@
 
 model_name_or_path: /public/home/act7jrkie6/SothisAI/model/Aihub/Qwen3.5-9B-Base/main/Qwen3.5-9B-Base
 model_revision: main
-torch_dtype: bf16
+trust_remote_code: true
+torch_dtype: float16
 
 # ⚠️ ROCm 推荐 sdpa，不用 flash_attention_2
 attn_implementation: sdpa
@@ -16,7 +17,8 @@ dataset_config: default
 dataset_num_proc: 4
 eos_token: <|im_end|>
 
-bf16: true
+bf16: false
+fp16: true
 do_eval: false
 eval_strategy: "no"
 
@@ -56,3 +58,18 @@ report_to:
 
 use_liger_kernel: false
 # Use accelerate config: recipes/accelerate_configs/ddp.yaml for single-GPU ROCm
+# Recommended invocation (single-GPU DTK with 64GB VRAM):
+# HIP_VISIBLE_DEVICES=0 ROCMLIBS=hip accelerate launch --config_file recipes/accelerate_configs/ddp.yaml \
+#     src/open_r1/sft.py --config recipes/Qwen3.5-9B/sft/config.yaml
+# Notes for ROCm DTK:
+# - Prefer `ddp.yaml` (MULTI_GPU with num_processes=1) for single physical GPU to avoid accelerate spawning
+#   multiple processes which leads to crashes/segfaults.
+# - If you previously tried `fsdp.yaml` and saw 'Segmentation fault', switch to `ddp.yaml`.
+# - Ensure you installed a ROCm-compatible PyTorch wheel before `pip install -e .`.
+#   Example ROCm install (adjust for your ROCm/toolkit version):
+#     pip install --index-url https://download.pytorch.org/whl/rocm5.6 torch==2.6.0+rocm5.6 torchvision --extra-index-url https://download.pytorch.org/whl/rocm5.6
+# - Recommended environment vars (set in shell before launching):
+#     export HIP_VISIBLE_DEVICES=0
+#     export HSA_OVERRIDE_GFX_VERSION=11.0.0  # only if needed for compatibility
+#     export PYTORCH_ROCM_ALLOC_CONF=garbage_collection_threshold:0.6,max_split_size_mb:512
+# - Use `bf16: true` in config and set mixed_precision in accelerate config to bf16 (already set in `ddp.yaml`).

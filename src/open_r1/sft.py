@@ -53,6 +53,41 @@ from transformers.trainer_utils import get_last_checkpoint
 # New imports for runtime checks
 import torch
 
+# Transformers >=4.52 may require torch>=2.4 and will disable torch on ROCm 2.2.x.
+# We keep torch enabled for ROCm training by overriding the availability check.
+try:
+    import transformers.utils.import_utils as _tf_import_utils
+    _torch_ver = torch.__version__.split("+")[0]
+    _tf_import_utils._torch_available = True
+    _tf_import_utils._torch_version = _torch_ver
+    _tf_import_utils.get_torch_version = lambda: _torch_ver
+    _tf_import_utils.is_torch_available = lambda: True
+except Exception:
+    # Best-effort: if this fails, continue and let transformers handle availability.
+    pass
+
+# Early guard: detect likely mismatch where the system has ROCm but installed torch is a CUDA build.
+try:
+    # Heuristic for ROCm presence: ROCM_PATH env or /opt/rocm or /opt/dtk on DTK nodes
+    _rocm_present = bool(os.environ.get("ROCM_PATH")) or os.path.exists("/opt/rocm") or os.path.exists("/opt/dtk")
+    _torch_is_rocm = hasattr(torch.version, "hip") and torch.version.hip is not None
+    if _rocm_present and not _torch_is_rocm:
+        msg = (
+            f"Detected ROCm libraries on the host (ROCM_PATH or /opt/rocm or /opt/dtk) but the installed "
+            f"PyTorch build appears to be CUDA-only (torch.__version__={getattr(torch, '__version__', None)}).\n"
+            "This mismatch commonly leads to native segmentation faults when calling CUDA APIs under ROCm.\n"
+            "Fix: uninstall the CUDA PyTorch wheel and install a ROCm-matching PyTorch wheel for your ROCm/toolkit version.\n"
+            "Example (adjust rocmX.Y and torch version to match your system):\n"
+            "  pip uninstall -y torch torchvision torchaudio\n"
+            "  pip install --index-url https://download.pytorch.org/whl/rocm5.6 torch==2.6.0+rocm5.6 torchvision --extra-index-url https://download.pytorch.org/whl/rocm5.6\n"
+            "After installing the ROCm wheel, reinstall this project in editable mode: pip install -e .\n"
+            "If you're unsure which ROCm version you have, run: 'hipcc --version' or 'rocminfo' on the host to inspect your ROCm/toolkit version."
+        )
+        raise RuntimeError(msg)
+except Exception:
+    # Non-fatal: if checking fails just continue. We avoid masking the original error in later stages.
+    pass
+
 from open_r1.configs import ScriptArguments, SFTConfig
 from open_r1.utils import get_dataset, get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
