@@ -68,23 +68,29 @@ python -m pip install --upgrade pip
 
 ### 2) Install dependencies
 
-For local SFT, install the core packages used by this repo:
+For local SFT on **CUDA**, install a CUDA-enabled PyTorch build first (pick the CUDA version that matches your driver/toolkit), then install this repo.
 
 **Linux / WSL**
 ```bash
-pip install torch transformers datasets accelerate trl peft safetensors
-pip install wandb
-pip install -e .
+pip install --upgrade pip
+# Install CUDA PyTorch (choose the right command from pytorch.org)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Install this repo (core training deps live in pyproject.toml)
+pip install -e ".[unsloth]"
 ```
 
 **Windows PowerShell**
 ```powershell
-pip install torch transformers datasets accelerate trl peft safetensors
-pip install wandb
-pip install -e .
+python -m pip install --upgrade pip
+# Install CUDA PyTorch (choose the right command from pytorch.org)
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Install this repo (core training deps live in pyproject.toml)
+python -m pip install -e ".[unsloth]"
 ```
 
-> If you want GPU training, make sure you install a CUDA-enabled PyTorch build that matches your system. If `torch.cuda.is_available()` is `False`, you currently have a CPU-only build.
+> If `torch.cuda.is_available()` is `False`, you're on a CPU-only torch build.
 
 ### 3) Prepare data
 
@@ -94,33 +100,33 @@ Make sure the directory contains the downloaded parquet files for `open-r1/Mixtu
 
 ### 4) Run local SFT
 
-The local Qwen recipe uses:
-- model: `Qwen/Qwen2.5-7B-Instruct`
+The local Qwen3.5 + Unsloth recipe uses:
+- model: `Qwen/Qwen3.5-4B`
 - dataset: `open-r1/Mixture-of-Thoughts`
-- output dir: `model/Qwen2.5-7B-Instruct-sft`
+- output dir: `model/Qwen3.5-4B-sft-unsloth`
 
 Use the scripts from the repository root.
 
 **Windows PowerShell**
 ```powershell
-.\scripts\run_qwen2.5_sft.ps1
+.\scripts\run_qwen3.5_sft.ps1
 ```
 
 **Linux / WSL**
 ```bash
-bash scripts/run_qwen2.5_sft.sh
+bash scripts/run_qwen3.5_sft.sh
 ```
 
 If you want to override settings on the command line, append extra args after `--`:
 
 **Windows PowerShell**
 ```powershell
-.\scripts\run_qwen2.5_sft.ps1 -- --num_train_epochs 1 --per_device_train_batch_size 1
+.\scripts\run_qwen3.5_sft.ps1 -- --num_train_epochs 1 --per_device_train_batch_size 1
 ```
 
 **Linux / WSL**
 ```bash
-bash scripts/run_qwen2.5_sft.sh -- --num_train_epochs 1 --per_device_train_batch_size 1
+bash scripts/run_qwen3.5_sft.sh -- --num_train_epochs 1 --per_device_train_batch_size 1
 ```
 
 ### 5) Optional checks

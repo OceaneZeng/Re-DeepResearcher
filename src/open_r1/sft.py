@@ -42,7 +42,6 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("LANG", "en_US.UTF-8")
 
 import logging
-import os as _os
 import sys
 
 import datasets
@@ -50,90 +49,51 @@ import transformers
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-# New imports for runtime checks
 import torch
 
-# Transformers >=4.52 may require torch>=2.4 and will disable torch on ROCm 2.2.x.
-# We keep torch enabled for ROCm training by overriding the availability check.
-try:
-    import transformers.utils.import_utils as _tf_import_utils
-    _torch_ver = torch.__version__.split("+")[0]
-    _tf_import_utils._torch_available = True
-    _tf_import_utils._torch_version = _torch_ver
-    _tf_import_utils.get_torch_version = lambda: _torch_ver
-    _tf_import_utils.is_torch_available = lambda: True
-except Exception:
-    # Best-effort: if this fails, continue and let transformers handle availability.
-    pass
-
-# Early guard: detect likely mismatch where the system has ROCm but installed torch is a CUDA build.
-try:
-    # Heuristic for ROCm presence: ROCM_PATH env or /opt/rocm or /opt/dtk on DTK nodes
-    _rocm_present = bool(os.environ.get("ROCM_PATH")) or os.path.exists("/opt/rocm") or os.path.exists("/opt/dtk")
-    _torch_is_rocm = hasattr(torch.version, "hip") and torch.version.hip is not None
-    if _rocm_present and not _torch_is_rocm:
-        msg = (
-            f"Detected ROCm libraries on the host (ROCM_PATH or /opt/rocm or /opt/dtk) but the installed "
-            f"PyTorch build appears to be CUDA-only (torch.__version__={getattr(torch, '__version__', None)}).\n"
-            "This mismatch commonly leads to native segmentation faults when calling CUDA APIs under ROCm.\n"
-            "Fix: uninstall the CUDA PyTorch wheel and install a ROCm-matching PyTorch wheel for your ROCm/toolkit version.\n"
-            "Example (adjust rocmX.Y and torch version to match your system):\n"
-            "  pip uninstall -y torch torchvision torchaudio\n"
-            "  pip install --index-url https://download.pytorch.org/whl/rocm5.6 torch==2.6.0+rocm5.6 torchvision --extra-index-url https://download.pytorch.org/whl/rocm5.6\n"
-            "After installing the ROCm wheel, reinstall this project in editable mode: pip install -e .\n"
-            "If you're unsure which ROCm version you have, run: 'hipcc --version' or 'rocminfo' on the host to inspect your ROCm/toolkit version."
-        )
-        raise RuntimeError(msg)
-except Exception:
-    # Non-fatal: if checking fails just continue. We avoid masking the original error in later stages.
-    pass
+from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config, setup_chat_format
 
 from open_r1.configs import ScriptArguments, SFTConfig
 from open_r1.utils import get_dataset, get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
 
-from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config
+# Optional Unsloth integration (CUDA-only)
 try:
-    from trl import setup_chat_format
-except Exception:
-    import warnings
+    from open_r1.utils.unsloth_utils import UnslothConfig, load_unsloth_model_and_tokenizer
+except Exception:  # pragma: no cover
+    UnslothConfig = None  # type: ignore
+    load_unsloth_model_and_tokenizer = None  # type: ignore
 
-    def setup_chat_format(model, tokenizer, format: str = "chatml"):
+# Transformers <4.26.1 had a bug where `from transformers import *` would leak
+# `transformers.file_utils` symbols into the global namespace; this caused
+# `getattr(transformers, 'is_datasets_available', None)` to always return True
+# even if the datasets library was not installed.
+# See: https://github.com/huggingface/transformers/pull/22462
+try:
+    from transformers import __version__ as transfo_version
+
+    if transfo_version.startswith("4.26.") or transfo_version.startswith("4.27."):
+        import warnings
+
         warnings.warn(
-            "trl.setup_chat_format not found in installed trl version; proceeding without modifying model/tokenizer chat format."
+            "Transformers version 4.26.x and 4.27.x have a bug that may cause runtime errors. "
+            "Please upgrade to at least 4.28.0.",
+            UserWarning,
         )
-        # Ensure tokenizer has a chat_template attribute to avoid attribute errors later
-        if not hasattr(tokenizer, "chat_template"):
-            setattr(tokenizer, "chat_template", None)
-        return model, tokenizer
-
+except Exception:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
 def sanity_checks(training_args):
-    """Perform runtime checks to avoid common multi-process / ROCm pitfalls.
-
-    - Ensure number of accelerate processes does not exceed available GPUs.
-    - Detect whether Torch is a ROCm build and warn about CUDA-only libs like bitsandbytes.
-    """
-    # Detect available devices
+    """Fail fast for common multi-process GPU misconfigurations."""
     try:
-        gpu_count = 0
-        if torch.cuda.is_available():
-            gpu_count = torch.cuda.device_count()
-        else:
-            # On ROCm builds torch.cuda.is_available() should still be True; fallback check for HIP
-            if hasattr(torch.version, 'hip') and torch.version.hip is not None:
-                # Some ROCm builds still expose CUDA API compat; attempt device_count
-                try:
-                    gpu_count = torch.cuda.device_count()
-                except Exception:
-                    gpu_count = 0
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         logger.info(f"Detected GPU count: {gpu_count}")
     except Exception as e:
-        logger.warning(f"Could not query CUDA/ROCm device count: {e}")
+        logger.warning(f"Could not query CUDA device count: {e}")
         gpu_count = 0
 
     # training_args.num_processes is set by accelerate; when running under accelerate the
@@ -147,21 +107,8 @@ def sanity_checks(training_args):
     if requested_procs > max(1, gpu_count):
         raise RuntimeError(
             f"Accelerate requested {requested_procs} processes but only {gpu_count} GPU(s) detected.\n"
-            "On single-GPU ROCm DTK please use an accelerate config with num_processes=1 (e.g., recipes/accelerate_configs/ddp.yaml).")
-
-    # Warn if bitsandbytes requested on ROCm or when Torch build is ROCm
-    try:
-        is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
-        if is_rocm:
-            logger.info(f"Detected ROCm-enabled PyTorch: {torch.__version__} (hip={torch.version.hip})")
-            # bitsandbytes is CUDA-only in many builds
-            try:
-                import bitsandbytes as bnb  # type: ignore
-                logger.warning("bitsandbytes appears installed — it requires CUDA; on ROCm this may not work.")
-            except Exception:
-                logger.info("bitsandbytes not installed (recommended for ROCm). If you need 8-bit, use a CPU fallback or CUDA node.")
-    except Exception:
-        pass
+            "If you're training on a single GPU, use an accelerate config with num_processes=1 (e.g., recipes/accelerate_configs/ddp.yaml)."
+        )
 
 
 def main(script_args, training_args, model_args):
@@ -203,8 +150,41 @@ def main(script_args, training_args, model_args):
     # Load dataset, tokenizer, and model #
     ######################################
     dataset = get_dataset(script_args)
-    tokenizer = get_tokenizer(model_args, training_args)
-    model = get_model(model_args, training_args)
+
+    # If user opts in, prefer Unsloth on CUDA.
+    use_unsloth = bool(getattr(training_args, "use_unsloth", False))
+    if use_unsloth and load_unsloth_model_and_tokenizer is not None:
+        logger.info("use_unsloth=true: loading model/tokenizer via Unsloth (CUDA).")
+
+        raw_torch_dtype = getattr(model_args, "torch_dtype", None)
+        if raw_torch_dtype in [None, "auto"]:
+            torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            torch_dtype = getattr(torch, raw_torch_dtype, torch.float16)
+
+        ucfg = UnslothConfig(
+            use_unsloth=True,
+            load_in_4bit=bool(getattr(training_args, "unsloth_load_in_4bit", False)),
+            max_seq_length=int(getattr(training_args, "max_seq_length", 4096)),
+            lora_r=int(getattr(training_args, "unsloth_lora_r", 16)),
+            lora_alpha=int(getattr(training_args, "unsloth_lora_alpha", 32)),
+            lora_dropout=float(getattr(training_args, "unsloth_lora_dropout", 0.05)),
+            lora_target_modules=getattr(training_args, "unsloth_lora_target_modules", None),
+        )
+
+        model, tokenizer = load_unsloth_model_and_tokenizer(
+            model_name_or_path=model_args.model_name_or_path,
+            torch_dtype=torch_dtype,
+            trust_remote_code=bool(getattr(model_args, "trust_remote_code", True)),
+            cfg=ucfg,
+        )
+
+        # Apply chat template override if present
+        if getattr(training_args, "chat_template", None) is not None:
+            tokenizer.chat_template = training_args.chat_template
+    else:
+        tokenizer = get_tokenizer(model_args, training_args)
+        model = get_model(model_args, training_args)
 
     if tokenizer.chat_template is None:
         logger.info("No chat template provided, defaulting to ChatML.")

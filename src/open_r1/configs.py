@@ -204,6 +204,25 @@ class SFTConfig(trl.SFTConfig):
         metadata={"help": ("The group to store runs under.")},
     )
 
+    # --------------------
+    # Unsloth (CUDA) knobs
+    # --------------------
+    use_unsloth: bool = field(
+        default=False,
+        metadata={"help": "Use Unsloth FastLanguageModel loader/LoRA on CUDA."},
+    )
+    unsloth_load_in_4bit: bool = field(
+        default=False,
+        metadata={"help": "Load base model in 4-bit via Unsloth (requires CUDA stack)."},
+    )
+    unsloth_lora_r: int = field(default=16, metadata={"help": "Unsloth LoRA rank (r)."})
+    unsloth_lora_alpha: int = field(default=32, metadata={"help": "Unsloth LoRA alpha."})
+    unsloth_lora_dropout: float = field(default=0.05, metadata={"help": "Unsloth LoRA dropout."})
+    unsloth_lora_target_modules: Optional[list[str]] = field(
+        default=None,
+        metadata={"help": "Optional list of target_modules for Unsloth LoRA. If omitted, uses Qwen defaults."},
+    )
+
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):

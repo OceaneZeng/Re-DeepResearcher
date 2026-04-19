@@ -1,0 +1,45 @@
+[project]
+name = "re-deepreasearcher"
+version = "0.1.0"
+description = "Fine-tuning utilities (Qwen3.5 + Unsloth + CUDA)"
+requires-python = ">=3.11"
+dependencies = [
+  "accelerate>=1.4.0",
+  "datasets>=3.2.0",
+  "einops>=0.8.0",
+  "huggingface-hub[cli,hf_xet]>=0.31.0,<2.0",
+  "openai>=2.32.0",
+  "packaging>=23.0",
+  "pandas>=3.0.2",
+  "peft>=0.14.0",
+  "pyarrow>=23.0.1",
+  "python-dotenv>=1.2.2",
+  "safetensors>=0.4.0",
+  "sentencepiece>=0.2.0",
+  "transformers>=4.55.0",
+  "trl>=0.23.0",
+  "wandb>=0.19.1",
+]
+
+[project.optional-dependencies]
+# Install a CUDA-enabled torch build separately (recommended), then:
+#   pip install -e ".[unsloth]"
+unsloth = [
+  "unsloth>=2025.2",
+]
+
+# Optional: 4bit / 8bit quantization on CUDA (may be OS-dependent).
+bnb = [
+  "bitsandbytes>=0.43.0",
+]
+
+dev = [
+  "pytest",
+  "parameterized>=0.9.0",
+  "ruff>=0.9.0",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
