@@ -41,6 +41,13 @@ os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("LANG", "en_US.UTF-8")
 
+# If available, import Unsloth as early as possible so it can patch
+# transformers/peft/trl for maximum performance.
+try:  # pragma: no cover
+    import unsloth  # type: ignore  # noqa: F401
+except Exception:
+    pass
+
 import glob
 import logging
 import sys
@@ -133,8 +140,10 @@ def _try_load_local_parquet_dataset(script_args: ScriptArguments) -> datasets.Da
 
         # HuggingFace datasets' parquet loader will try to cast every file into a single schema.
         # If users have multiple parquet datasets under `data/` with different schemas, this fails.
-        # We proactively group files by column set and pick the largest group to "do what I mean"
+        # We proactively group files by column set. By default we pick the largest group to "do what I mean"
         # for the common case (e.g. `data/ShareGPT/*.parquet` plus unrelated `data/FineWeb/*.parquet`).
+        # If `script_args.allow_mixed_parquet_schemas=true`, we instead load each schema-group and normalize
+        # to a shared training format before concatenation.
         try:
             import pyarrow.parquet as pq  # local import to keep base imports light
 
@@ -146,18 +155,114 @@ def _try_load_local_parquet_dataset(script_args: ScriptArguments) -> datasets.Da
 
             if len(by_cols) > 1:
                 groups = sorted(by_cols.items(), key=lambda kv: len(kv[1]), reverse=True)
-                chosen_cols, chosen_files = groups[0]
-                logger.warning(
-                    "Multiple parquet schemas detected under %s. "
-                    "Auto-selecting the largest schema-group (%d files, %d columns) and skipping %d other file(s). "
-                    "If this is not desired, set dataset_name to a specific subdir or glob (e.g. data/ShareGPT or data/ShareGPT/*.parquet).",
-                    hint,
-                    len(chosen_files),
-                    len(chosen_cols),
-                    sum(len(v) for _, v in groups[1:]),
-                )
-                files = sorted(chosen_files)
+                if bool(getattr(script_args, "allow_mixed_parquet_schemas", False)):
+                    logger.warning(
+                        "Multiple parquet schemas detected under %s. "
+                        "allow_mixed_parquet_schemas=true: will load %d schema-group(s) and normalize them before concatenation.",
+                        hint,
+                        len(groups),
+                    )
+
+                    def _to_text(example: dict) -> dict:
+                        """Normalize heterogeneous parquet schemas into a single `text` column.
+
+                        We prefer `text` over `messages` here because concatenating datasets with
+                        mixed column layouts (some chat, some plain text) can fail feature alignment.
+                        """
+                        cols = set(example.keys())
+
+                        # Chat-style already in `messages`
+                        if "messages" in cols and isinstance(example.get("messages"), list):
+                            parts: list[str] = []
+                            for m in example["messages"]:
+                                if not isinstance(m, dict):
+                                    continue
+                                role = str(m.get("role", "user"))
+                                content = str(m.get("content", "") or "")
+                                parts.append(f"{role}: {content}")
+                            return {"text": "\n".join(parts)}
+
+                        # ShareGPT-style conversations
+                        if "conversations" in cols and isinstance(example.get("conversations"), list):
+                            try:
+                                converted = _sharegpt_conversations_to_messages(example)["messages"]
+                                parts = [f"{m['role']}: {m['content']}" for m in converted if isinstance(m, dict)]
+                                return {"text": "\n".join(parts)}
+                            except Exception:
+                                pass
+
+                        # Alpaca / instruction tuning
+                        if "instruction" in cols and "output" in cols:
+                            instr = str(example.get("instruction", "") or "")
+                            inp = str(example.get("input", "") or "")
+                            user = instr if not inp else (instr + "\n" + inp)
+                            out = str(example.get("output", "") or "")
+                            return {"text": f"user: {user}\nassistant: {out}"}
+
+                        # Prompt-response style
+                        if "prompt" in cols and ("response" in cols or "completion" in cols):
+                            resp_key = "response" if "response" in cols else "completion"
+                            p = str(example.get("prompt", "") or "")
+                            r = str(example.get(resp_key, "") or "")
+                            return {"text": f"user: {p}\nassistant: {r}"}
+
+                        # QA style
+                        if "question" in cols and "answer" in cols:
+                            q = str(example.get("question", "") or "")
+                            a = str(example.get("answer", "") or "")
+                            return {"text": f"user: {q}\nassistant: {a}"}
+
+                        # Plain text
+                        if "text" in cols:
+                            return {"text": str(example.get("text", "") or "")}
+
+                        # Fallback: pick the first string-ish column.
+                        for k in example.keys():
+                            v = example.get(k)
+                            if isinstance(v, str) and v:
+                                return {"text": v}
+                        return {"text": str(example)}
+
+                    loaded_trains: list[datasets.Dataset] = []
+                    for cols, group_files in groups:
+                        ds_dict = datasets.load_dataset("parquet", data_files={"train": sorted(group_files)})
+                        ds = ds_dict["train"]
+                        ds = ds.map(_to_text, remove_columns=list(ds.column_names))
+                        # Ensure all groups have identical feature types for concatenation.
+                        # Some parquet sources yield Arrow `large_string` which Datasets treats as incompatible with `string`.
+                        ds = ds.cast(datasets.Features({"text": datasets.Value("string")}))
+                        loaded_trains.append(ds)
+
+                    logger.info(
+                        "Loaded %d parquet schema-group(s) from %s; concatenating (%d total files).",
+                        len(loaded_trains),
+                        hint,
+                        sum(len(v) for _, v in groups),
+                    )
+                    train = datasets.concatenate_datasets(loaded_trains)
+                    return datasets.DatasetDict({"train": train})
+                else:
+                    chosen_cols, chosen_files = groups[0]
+                    logger.warning(
+                        "Multiple parquet schemas detected under %s. "
+                        "Auto-selecting the largest schema-group (%d files, %d columns) and skipping %d other file(s). "
+                        "If this is not desired, set `allow_mixed_parquet_schemas=true` or point dataset_name to a specific subdir/glob "
+                        "(e.g. data/ShareGPT or data/ShareGPT/*.parquet).",
+                        hint,
+                        len(chosen_files),
+                        len(chosen_cols),
+                        sum(len(v) for _, v in groups[1:]),
+                    )
+                    files = sorted(chosen_files)
         except Exception as e:
+            if bool(getattr(script_args, "allow_mixed_parquet_schemas", False)):
+                # In mixed-schema mode, falling back to a single load will almost certainly crash
+                # with a CastError. Fail fast with a clearer message.
+                raise RuntimeError(
+                    f"Failed to load mixed-schema parquet dataset from {hint}. "
+                    "You have allow_mixed_parquet_schemas=true, but normalization/concatenation failed. "
+                    f"Original error: {e}"
+                ) from e
             logger.warning(f"Could not pre-scan parquet schemas ({hint}): {e}. Falling back to direct load.")
 
         logger.info(f"Loading local parquet dataset from {hint} ({len(files)} files)")
@@ -296,6 +401,7 @@ def main(script_args, training_args, model_args):
             use_unsloth=True,
             load_in_4bit=bool(getattr(training_args, "unsloth_load_in_4bit", False)),
             max_seq_length=int(getattr(training_args, "max_seq_length", 4096)),
+            local_files_only=bool(getattr(training_args, "unsloth_local_files_only", False)),
             lora_r=int(getattr(training_args, "unsloth_lora_r", 16)),
             lora_alpha=int(getattr(training_args, "unsloth_lora_alpha", 32)),
             lora_dropout=float(getattr(training_args, "unsloth_lora_dropout", 0.05)),

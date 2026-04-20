@@ -74,6 +74,13 @@ class ScriptArguments(trl.ScriptArguments):
         default=None,
         metadata={"help": "Configuration for creating dataset mixtures with advanced options like shuffling."},
     )
+    allow_mixed_parquet_schemas: bool = field(
+        default=False,
+        metadata={
+            "help": "When loading local parquet via dataset_name path/glob, allow mixing different parquet schemas "
+            "by loading files individually and normalizing columns before concatenation."
+        },
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.dataset_mixture is None:
@@ -205,6 +212,20 @@ class SFTConfig(trl.SFTConfig):
     )
 
     # --------------------
+    # Compatibility knobs
+    # --------------------
+    # Some TRL versions don't include these fields on `trl.SFTConfig` even though
+    # the training code and recipes expect them.
+    max_seq_length: int = field(
+        default=4096,
+        metadata={"help": "Maximum sequence length for SFT tokenization/packing."},
+    )
+    packing: bool = field(
+        default=False,
+        metadata={"help": "Whether to pack multiple samples into a single sequence."},
+    )
+
+    # --------------------
     # Unsloth (CUDA) knobs
     # --------------------
     use_unsloth: bool = field(
@@ -214,6 +235,13 @@ class SFTConfig(trl.SFTConfig):
     unsloth_load_in_4bit: bool = field(
         default=False,
         metadata={"help": "Load base model in 4-bit via Unsloth (requires CUDA stack)."},
+    )
+    unsloth_local_files_only: bool = field(
+        default=False,
+        metadata={
+            "help": "If true, Unsloth/Transformers will only load from local files/caches (no HF Hub network). "
+            "You can also set HF_HUB_OFFLINE=1 or TRANSFORMERS_OFFLINE=1."
+        },
     )
     unsloth_lora_r: int = field(default=16, metadata={"help": "Unsloth LoRA rank (r)."})
     unsloth_lora_alpha: int = field(default=32, metadata={"help": "Unsloth LoRA alpha."})

@@ -5,7 +5,8 @@
 # -----------------
 # ScriptArguments
 # -----------------
-dataset_name: open-r1/Mixture-of-Thoughts
+dataset_name: /gz-fs/*.parquet
+allow_mixed_parquet_schemas: true
 # dataset_config: all
 # dataset_train_split: train
 # dataset_test_split: test
@@ -15,9 +16,9 @@ dataset_name: open-r1/Mixture-of-Thoughts
 # -----------------
 output_dir: model/Qwen3.5-4B-sft-unsloth
 num_train_epochs: 1
-per_device_train_batch_size: 1
-gradient_accumulation_steps: 8
-learning_rate: 2.0e-5
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-4
 lr_scheduler_type: cosine
 warmup_ratio: 0.03
 logging_steps: 5
@@ -26,19 +27,24 @@ save_total_limit: 2
 report_to: []
 
 max_seq_length: 4096
-packing: false
+# 对 SFT 来说 packing=true 通常能明显提升吞吐（更充分利用每个 step 的 token）
+packing: true
 
-# CUDA 上优先用 bf16（A100/H100/L40 等），如果你的卡不支持 bf16，改成 fp16=true
+# RTX 4090 支持 bf16（PyTorch 会在必要时回退）；不行再改 fp16=true
 bf16: true
 fp16: false
 
 gradient_checkpointing: true
 
+# 4bit/QLoRA 常用优化器（需要 bitsandbytes）；如果你没装 bnb，可改回 adamw_torch
+optim: paged_adamw_8bit
+
 # -----------------
 # Unsloth knobs
 # -----------------
 use_unsloth: true
-unsloth_load_in_4bit: false   # 想更省显存可改 true（需要 CUDA+bitsandbytes 等）
+unsloth_load_in_4bit: true
+unsloth_local_files_only: false
 unsloth_lora_r: 16
 unsloth_lora_alpha: 32
 unsloth_lora_dropout: 0.05
@@ -50,4 +56,3 @@ unsloth_lora_dropout: 0.05
 model_name_or_path: Qwen/Qwen3.5-4B
 trust_remote_code: true
 # torch_dtype: bfloat16
-
