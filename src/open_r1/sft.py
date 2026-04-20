@@ -41,6 +41,7 @@ os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 os.environ.setdefault("LANG", "en_US.UTF-8")
 
+import glob
 import logging
 import sys
 
@@ -111,6 +112,114 @@ def sanity_checks(training_args):
         )
 
 
+def _try_load_local_parquet_dataset(script_args: ScriptArguments) -> datasets.DatasetDict | None:
+    """Optionally load a local parquet dataset from `dataset_name`.
+
+    Supports:
+    - dataset_name as a local `.parquet` file path
+    - dataset_name as a local directory path containing parquet files (recursive)
+    - dataset_name as a glob pattern (e.g. `data/**/*.parquet`)
+    - dataset_name = "data": load all `data/**/*.parquet` under repo CWD
+    - dataset_name = "local_parquet": load all `data/**/*.parquet` under repo CWD
+    """
+    dataset_name = getattr(script_args, "dataset_name", None)
+    if not isinstance(dataset_name, str) or not dataset_name:
+        return None
+
+    def _load_parquet_files(files: list[str], *, hint: str) -> datasets.DatasetDict | None:
+        files = [f for f in files if os.path.isfile(f) and f.lower().endswith(".parquet")]
+        if not files:
+            return None
+
+        # HuggingFace datasets' parquet loader will try to cast every file into a single schema.
+        # If users have multiple parquet datasets under `data/` with different schemas, this fails.
+        # We proactively group files by column set and pick the largest group to "do what I mean"
+        # for the common case (e.g. `data/ShareGPT/*.parquet` plus unrelated `data/FineWeb/*.parquet`).
+        try:
+            import pyarrow.parquet as pq  # local import to keep base imports light
+
+            by_cols: dict[tuple[str, ...], list[str]] = {}
+            for f in files:
+                schema = pq.read_schema(f)
+                cols = tuple(schema.names)
+                by_cols.setdefault(cols, []).append(f)
+
+            if len(by_cols) > 1:
+                groups = sorted(by_cols.items(), key=lambda kv: len(kv[1]), reverse=True)
+                chosen_cols, chosen_files = groups[0]
+                logger.warning(
+                    "Multiple parquet schemas detected under %s. "
+                    "Auto-selecting the largest schema-group (%d files, %d columns) and skipping %d other file(s). "
+                    "If this is not desired, set dataset_name to a specific subdir or glob (e.g. data/ShareGPT or data/ShareGPT/*.parquet).",
+                    hint,
+                    len(chosen_files),
+                    len(chosen_cols),
+                    sum(len(v) for _, v in groups[1:]),
+                )
+                files = sorted(chosen_files)
+        except Exception as e:
+            logger.warning(f"Could not pre-scan parquet schemas ({hint}): {e}. Falling back to direct load.")
+
+        logger.info(f"Loading local parquet dataset from {hint} ({len(files)} files)")
+        return datasets.load_dataset("parquet", data_files={"train": sorted(files)})
+
+    # Special alias to avoid escaping long paths in config files.
+    if dataset_name in {"local_parquet", "data"}:
+        root = os.path.join(os.getcwd(), "data")
+        if not os.path.isdir(root):
+            return None
+        parquet_files = sorted(glob.glob(os.path.join(root, "**", "*.parquet"), recursive=True))
+        return _load_parquet_files(parquet_files, hint=root)
+
+    p = dataset_name
+    # Glob support, e.g. `data/**/*.parquet`
+    if any(ch in p for ch in ["*", "?", "["]):
+        matches = sorted(glob.glob(p, recursive=True))
+        return _load_parquet_files(matches, hint=p)
+
+    if os.path.isfile(p) and p.lower().endswith(".parquet"):
+        logger.info(f"Loading local parquet dataset from file: {p}")
+        return datasets.load_dataset("parquet", data_files={"train": [p]})
+    if os.path.isdir(p):
+        parquet_files = sorted(glob.glob(os.path.join(p, "**", "*.parquet"), recursive=True))
+        return _load_parquet_files(parquet_files, hint=p)
+    return None
+
+
+def _sharegpt_conversations_to_messages(example: dict) -> dict:
+    """Convert ShareGPT-style `conversations` -> `messages`.
+
+    Input:
+      conversations: list[{"from": "...", "value": "...", ...}, ...]
+    Output:
+      messages: list[{"role": "user"|"assistant"|"system", "content": "..."}]
+    """
+    conv = example.get("conversations")
+    if not isinstance(conv, list):
+        raise ValueError("Expected `conversations` to be a list.")
+
+    messages = []
+    for t in conv:
+        if not isinstance(t, dict):
+            continue
+        frm = str(t.get("from", "")).strip().lower()
+        content = t.get("value")
+        if content is None:
+            content = ""
+        content = str(content)
+        if frm in {"human", "user"}:
+            role = "user"
+        elif frm in {"gpt", "assistant", "model"}:
+            role = "assistant"
+        elif frm in {"system"}:
+            role = "system"
+        else:
+            # Unknown tag: default to user to keep a valid conversation.
+            role = "user"
+        messages.append({"role": role, "content": content})
+    return {"messages": messages}
+
+
 def main(script_args, training_args, model_args):
     set_seed(training_args.seed)
 
@@ -149,7 +258,28 @@ def main(script_args, training_args, model_args):
     ######################################
     # Load dataset, tokenizer, and model #
     ######################################
-    dataset = get_dataset(script_args)
+    # Prefer local parquet if user points dataset_name to a path (or uses the alias).
+    local_ds = _try_load_local_parquet_dataset(script_args)
+    dataset = local_ds if local_ds is not None else get_dataset(script_args)
+
+    # If this is ShareGPT-style parquet, convert `conversations` -> `messages` for TRL SFT.
+    # TRL supports chat datasets with a `messages` column (list of {role, content} dicts).
+    for split in list(dataset.keys()):
+        cols = set(dataset[split].column_names)
+        if "messages" not in cols and "conversations" in cols:
+            logger.info(f"Detected ShareGPT `conversations` in split={split}; converting to `messages`.")
+            dataset[split] = dataset[split].map(_sharegpt_conversations_to_messages)
+
+    # If we have a chat dataset with `messages`, ensure TRL reads the right column.
+    # TRL's SFTTrainer defaults to `dataset_text_field='text'`; for chat datasets it should be `messages`.
+    try:
+        train_split = script_args.dataset_train_split
+        train_cols = set(dataset[train_split].column_names)
+        if "messages" in train_cols and getattr(training_args, "dataset_text_field", "text") == "text":
+            logger.info("Detected chat dataset (`messages`); setting training_args.dataset_text_field='messages'.")
+            training_args.dataset_text_field = "messages"
+    except Exception:
+        pass
 
     # If user opts in, prefer Unsloth on CUDA.
     use_unsloth = bool(getattr(training_args, "use_unsloth", False))
@@ -267,14 +397,22 @@ if __name__ == "__main__":
     if getattr(script_args, "dataset_name", None) is None and getattr(script_args, "dataset_mixture", None) is None:
         raise ValueError(
             "Either `dataset_name` or `dataset_mixture` must be provided in the config file. "
-            "For local parquet-backed SFT, set dataset_name: open-r1/Mixture-of-Thoughts."
+            "For local parquet-backed SFT, set dataset_name to `data` (or a parquet path / glob)."
         )
 
     # Provide conservative local defaults when running locally and arguments are omitted.
-    # Default model to a Qwen 7B instruct family if not specified.
+    # Default model to Qwen3.5-9B if not specified (user target).
     if getattr(model_args, "model_name_or_path", None) is None:
-        model_args.model_name_or_path = "open-r1/Qwen2.5-7B-Instruct"
+        model_args.model_name_or_path = "Qwen/Qwen3.5-9B"
         print(f"Defaulting model to {model_args.model_name_or_path}")
+
+    # If CUDA is available and Unsloth is installed, default to using it unless explicitly disabled.
+    if torch.cuda.is_available():
+        try:
+            if getattr(training_args, "use_unsloth", False) is False:
+                training_args.use_unsloth = True
+        except Exception:
+            pass
 
     # If a local model folder exists in ./models/<name>, prefer it for offline runs.
     try:
