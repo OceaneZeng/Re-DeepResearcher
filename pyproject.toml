@@ -25,14 +25,17 @@ dependencies = [
 
 [project.optional-dependencies]
 # Install a CUDA-enabled torch build separately (recommended), then:
-#   pip install -e ".[unsloth]"
+#   pip install -e ".[unsloth_cuda]"
 unsloth = [
   "unsloth>=2025.2",
   "unsloth_zoo",
 ]
 
-# Optional: 4bit / 8bit quantization on CUDA (may be OS-dependent).
-bnb = [
+# Recommended for Unsloth + 4bit/QLoRA on CUDA GPUs (e.g. RTX 5090).
+# Note: install a matching CUDA-enabled torch wheel first.
+unsloth_cuda = [
+  "unsloth>=2025.2",
+  "unsloth_zoo",
   "bitsandbytes>=0.43.0",
 ]
 

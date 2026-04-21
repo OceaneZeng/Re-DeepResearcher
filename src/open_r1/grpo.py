@@ -26,6 +26,7 @@ from open_r1.rewards import get_reward_funcs
 from open_r1.utils import get_dataset, get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
+from open_r1.utils.hf_download_utils import resolve_hf_model_to_local_dir
 from trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
 
 
@@ -178,5 +179,17 @@ def main(script_args, training_args, model_args):
 if __name__ == "__main__":
     parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+    try:
+        resolved = resolve_hf_model_to_local_dir(
+            str(model_args.model_name_or_path),
+            local_dir=getattr(training_args, "hf_local_dir", None),
+            revision=getattr(model_args, "model_revision", None),
+            cache_dir=getattr(training_args, "model_cache_dir", None) or getattr(model_args, "cache_dir", None),
+        )
+        if resolved.local_dir != model_args.model_name_or_path:
+            print(f"Downloaded HF model snapshot to: {resolved.local_dir}")
+            model_args.model_name_or_path = resolved.local_dir
+    except Exception as e:
+        print(f"HF local_dir download skipped: {e}")
     main(script_args, training_args, model_args)
     

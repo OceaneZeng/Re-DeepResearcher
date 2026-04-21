@@ -62,6 +62,7 @@ def load_unsloth_model_and_tokenizer(
     torch_dtype: Any,
     trust_remote_code: bool,
     cfg: UnslothConfig,
+    cache_dir: Optional[str] = None,
 ) -> Tuple[Any, Any]:
     """Load model/tokenizer via Unsloth FastLanguageModel.
 
@@ -98,6 +99,7 @@ def load_unsloth_model_and_tokenizer(
         load_in_4bit=bool(cfg.load_in_4bit),
         trust_remote_code=bool(trust_remote_code),
         local_files_only=local_files_only,
+        cache_dir=cache_dir,
     )
 
     target_modules = cfg.lora_target_modules or _default_qwen_lora_targets()
