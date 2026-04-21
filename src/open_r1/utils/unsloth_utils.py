@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
+import os
 import torch
 
 
@@ -26,6 +27,7 @@ class UnslothConfig:
     use_unsloth: bool = False
     load_in_4bit: bool = False
     max_seq_length: Optional[int] = None
+    local_files_only: bool = False
 
     # LoRA
     lora_r: int = 16
@@ -85,12 +87,17 @@ def load_unsloth_model_and_tokenizer(
         # fall back to a safe-ish default; caller should usually pass training_args.max_seq_length
         max_seq_length = 4096
 
+    # Respect common offline flags. If set, never attempt network access.
+    env_offline = os.environ.get("HF_HUB_OFFLINE") or os.environ.get("TRANSFORMERS_OFFLINE")
+    local_files_only = bool(cfg.local_files_only) or (str(env_offline).strip() in {"1", "true", "True", "YES", "yes"})
+
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name_or_path=model_name_or_path,
         max_seq_length=max_seq_length,
         dtype=torch_dtype,
         load_in_4bit=bool(cfg.load_in_4bit),
         trust_remote_code=bool(trust_remote_code),
+        local_files_only=local_files_only,
     )
 
     target_modules = cfg.lora_target_modules or _default_qwen_lora_targets()
@@ -109,4 +116,3 @@ def load_unsloth_model_and_tokenizer(
     )
 
     return model, tokenizer
-
