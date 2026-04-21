@@ -79,11 +79,46 @@ def main(script_args, training_args, model_args):
     ################
     tokenizer = get_tokenizer(model_args, training_args)
 
+    # Ensure eos_token from ScriptArguments takes effect.
+    try:
+        desired_eos = getattr(script_args, "eos_token", None)
+        if isinstance(desired_eos, str) and desired_eos.strip():
+            desired_eos = desired_eos.strip()
+            if tokenizer.eos_token != desired_eos:
+                if desired_eos not in tokenizer.get_vocab():
+                    tokenizer.add_special_tokens({"eos_token": desired_eos})
+                else:
+                    tokenizer.eos_token = desired_eos
+            logger.info(
+                "Effective eos_token=%r eos_token_id=%s (requested=%r)",
+                tokenizer.eos_token,
+                getattr(tokenizer, "eos_token_id", None),
+                desired_eos,
+            )
+    except Exception as e:
+        logger.warning("Could not apply eos_token override: %s", e)
+
+    # Log effective chat template for verification.
+    try:
+        tpl = getattr(tokenizer, "chat_template", None)
+        if isinstance(tpl, str) and tpl:
+            logger.info("Effective chat_template is set (len=%d).", len(tpl))
+        else:
+            logger.info("Effective chat_template is NOT set.")
+    except Exception:
+        pass
+
     ##############
     # Load model #
     ##############
     logger.info("*** Loading model ***")
     model = get_model(model_args, training_args)
+    try:
+        # If eos was newly added, resize embeddings now that model is loaded.
+        if getattr(script_args, "eos_token", None) and len(tokenizer) > getattr(model.get_input_embeddings(), "num_embeddings", len(tokenizer)):
+            model.resize_token_embeddings(len(tokenizer))
+    except Exception:
+        pass
 
     # Get reward functions from the registry
     reward_funcs = get_reward_funcs(script_args)
@@ -192,4 +227,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"HF local_dir download skipped: {e}")
     main(script_args, training_args, model_args)
-    

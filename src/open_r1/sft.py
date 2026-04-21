@@ -428,6 +428,41 @@ def main(script_args, training_args, model_args):
         logger.info("No chat template provided, defaulting to ChatML.")
         model, tokenizer = setup_chat_format(model, tokenizer, format="chatml")
 
+    # Ensure eos_token from ScriptArguments actually takes effect.
+    # TRL/Transformers may not automatically apply it for local chat datasets.
+    try:
+        desired_eos = getattr(script_args, "eos_token", None)
+        if isinstance(desired_eos, str) and desired_eos.strip():
+            desired_eos = desired_eos.strip()
+            if tokenizer.eos_token != desired_eos:
+                if desired_eos not in tokenizer.get_vocab():
+                    tokenizer.add_special_tokens({"eos_token": desired_eos})
+                    try:
+                        model.resize_token_embeddings(len(tokenizer))
+                    except Exception:
+                        pass
+                else:
+                    tokenizer.eos_token = desired_eos
+
+            logger.info(
+                "Effective eos_token=%r eos_token_id=%s (requested=%r)",
+                tokenizer.eos_token,
+                getattr(tokenizer, "eos_token_id", None),
+                desired_eos,
+            )
+    except Exception as e:
+        logger.warning("Could not apply eos_token override: %s", e)
+
+    # Log effective chat template for verification.
+    try:
+        tpl = getattr(tokenizer, "chat_template", None)
+        if isinstance(tpl, str) and tpl:
+            logger.info("Effective chat_template is set (len=%d).", len(tpl))
+        else:
+            logger.info("Effective chat_template is NOT set.")
+    except Exception:
+        pass
+
     ############################
     # Initialize the SFT Trainer
     ############################

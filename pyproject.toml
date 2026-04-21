@@ -39,6 +39,12 @@ unsloth_cuda = [
   "bitsandbytes>=0.43.0",
 ]
 
+# If you use a SOCKS proxy (ALL_PROXY/HTTPS_PROXY with socks5://),
+# install this extra so huggingface_hub/httpx can route traffic correctly.
+proxy_socks = [
+  "httpx[socks]>=0.27.0",
+]
+
 dev = [
   "pytest",
   "parameterized>=0.9.0",

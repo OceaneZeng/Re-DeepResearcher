@@ -85,17 +85,23 @@ def resolve_hf_model_to_local_dir(
     if _is_rank0_process():
         from huggingface_hub import snapshot_download
 
-        kwargs = dict(local_dir=local_dir)
+        # Always run snapshot_download with resume enabled when local_dir is set.
+        # A partial/incomplete snapshot (e.g. missing sharded safetensors files)
+        # can look "ready" just because `config.json` exists; this would later
+        # crash when loading weights. snapshot_download is cache-aware and will
+        # quickly no-op when everything is already present.
+        kwargs = dict(
+            local_dir=local_dir,
+            resume_download=True,
+            local_dir_use_symlinks=False,
+        )
         if revision and str(revision).strip():
             kwargs["revision"] = revision
         if cache_dir and str(cache_dir).strip():
             kwargs["cache_dir"] = cache_dir
 
-        # If already present, don't re-download.
-        if not _looks_like_ready_model_dir(local_dir):
-            snapshot_download(repo_id=model_name_or_path, **kwargs)
+        snapshot_download(repo_id=model_name_or_path, **kwargs)
     else:
         _wait_for_model_dir(local_dir)
 
     return HFResolvedModel(original=model_name_or_path, local_dir=local_dir)
-
