@@ -18,7 +18,7 @@ Supervised fine-tuning script for decoder language models.
 Usage:
 
 # One 1 node of 8 x H100s
-accelerate launch --config_file=recipes/accelerate_configs/zero3.yaml src/open_r1/sft.py \
+accelerate launch --config_file=recipes/accelerate_configs/ddp.yaml src/open_r1/sft.py \
     --model_name_or_path open-r1/Qwen2.5-Math-7B-RoPE-300k \
     --dataset_name open-r1/Mixture-of-Thoughts \
     --dataset_config all \
