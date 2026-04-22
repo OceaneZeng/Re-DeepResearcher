@@ -92,30 +92,15 @@ def load_unsloth_model_and_tokenizer(
     env_offline = os.environ.get("HF_HUB_OFFLINE") or os.environ.get("TRANSFORMERS_OFFLINE")
     local_files_only = bool(cfg.local_files_only) or (str(env_offline).strip() in {"1", "true", "True", "YES", "yes"})
 
-    # Unsloth's loader API has changed across versions (and some patched
-    # Transformers builds are picky about unexpected kwargs). We try a small
-    # compatibility ladder to avoid leaking unknown keywords down to
-    # Transformers model constructors (e.g. `model_name_or_path`).
-    base_kwargs = dict(
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name_or_path=model_name_or_path,
         max_seq_length=max_seq_length,
         dtype=torch_dtype,
         load_in_4bit=bool(cfg.load_in_4bit),
         trust_remote_code=bool(trust_remote_code),
         local_files_only=local_files_only,
+        cache_dir=cache_dir,
     )
-    if cache_dir:
-        base_kwargs["cache_dir"] = cache_dir
-
-    try:
-        # Newer/common Unsloth: `model_name=...`
-        model, tokenizer = FastLanguageModel.from_pretrained(model_name=model_name_or_path, **base_kwargs)
-    except TypeError:
-        try:
-            # Some variants: `model_name_or_path=...`
-            model, tokenizer = FastLanguageModel.from_pretrained(model_name_or_path=model_name_or_path, **base_kwargs)
-        except TypeError:
-            # Fallback: positional first arg
-            model, tokenizer = FastLanguageModel.from_pretrained(model_name_or_path, **base_kwargs)
 
     target_modules = cfg.lora_target_modules or _default_qwen_lora_targets()
 

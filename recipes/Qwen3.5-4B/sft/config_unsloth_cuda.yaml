@@ -5,10 +5,8 @@
 # -----------------
 # ScriptArguments
 # -----------------
-chat_template: "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0]['role'] == 'system' %}\n        {{- messages[0]['content'] }}\n    {%- else %}\n        {{- 'You are Open-R1, a language model trained by Hugging Face to help users. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracing, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion. Now, try to solve the following question through the above guidelines.' }}\n    {%- endif %}\n    {{- \"\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n    {%- if messages[0]['role'] == 'system' %}\n        {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}\n    {%- else %}\n        {{- '<|im_start|>system\\nYou are Open-R1, a language model trained by Hugging Face to help users. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracing, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion. Now, try to solve the following question through the above guidelines.<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- for message in messages %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) or (message.role == \"assistant\" and not message.tool_calls) %}\n        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {{- '<|im_start|>' + message.role }}\n        {%- if message.content %}\n            {{- '\\n' + message.content }}\n        {%- endif %}\n        {%- for tool_call in message.tool_calls %}\n            {%- if tool_call.function is defined %}\n                {%- set tool_call = tool_call.function %}\n            {%- endif %}\n            {{- '\\n<tool_call>\\n{\"name\": \"' }}\n            {{- tool_call.name }}\n            {{- '\", \"arguments\": ' }}\n            {{- tool_call.arguments | tojson }}\n            {{- '}\\n</tool_call>' }}\n        {%- endfor %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if (loop.index0 == 0) or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- message.content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n{%- endif %}\n"
-dataset_name: /home/featurize/data/*.parquet
+dataset_name: /gz-fs/*.parquet
 allow_mixed_parquet_schemas: true
-eos_token: <|im_end|>
 # dataset_config: all
 # dataset_train_split: train
 # dataset_test_split: test
@@ -16,27 +14,21 @@ eos_token: <|im_end|>
 # -----------------
 # SFTConfig (training args)
 # -----------------
-output_dir: /home/featurize/work/model/Qwen3.5-4B-sft-unsloth
+output_dir: model/Qwen3.5-4B-sft-unsloth
 num_train_epochs: 1
-# 24GB 单卡更稳的起步配置（避免 OOM）。如果显存还有余量，再逐步加回去。
-per_device_train_batch_size: 1
-gradient_accumulation_steps: 8
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
 learning_rate: 2.0e-4
 lr_scheduler_type: cosine
-# warmup_ratio 已弃用；按当前 9000 样本 / grad_accum=8 约 1125 steps/epoch，
-# 取 3% ≈ 34 steps.
-warmup_steps: 34
+warmup_ratio: 0.03
 logging_steps: 5
 save_steps: 200
 save_total_limit: 2
-report_to: ["wandb"]
-wandb_project: Re-DeepResearcher
-# wandb_entity: your_wandb_entity
-# run_name: qwen3.5-4b-sft-unsloth
+report_to: []
 
-max_seq_length: 2048
-# Unsloth 已提示当前模型路径会跳过 packing，这里关掉避免困惑。
-packing: false
+max_seq_length: 4096
+# 对 SFT 来说 packing=true 通常能明显提升吞吐（更充分利用每个 step 的 token）
+packing: true
 
 # RTX 4090 支持 bf16（PyTorch 会在必要时回退）；不行再改 fp16=true
 bf16: true
@@ -55,14 +47,12 @@ unsloth_load_in_4bit: true
 unsloth_local_files_only: false
 unsloth_lora_r: 16
 unsloth_lora_alpha: 32
-# Unsloth 提示 dropout!=0 会影响 fast patching；先用 0 保守起跑。
-unsloth_lora_dropout: 0.0
+unsloth_lora_dropout: 0.05
 # unsloth_lora_target_modules: ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
 
 # -----------------
 # ModelConfig (trl.ModelConfig)
 # -----------------
-hf_local_dir: /home/featurize/work/model/Qwen3.5-4B
-model_name_or_path: Qwen/Qwen3.5-4B
+model_name_or_path: modelscope:Qwen/Qwen3.5-4B
 trust_remote_code: true
 # torch_dtype: bfloat16

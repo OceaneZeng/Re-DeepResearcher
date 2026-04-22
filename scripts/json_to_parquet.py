@@ -210,6 +210,106 @@ def _write_partitioned_batches(
     return total
 
 
+def _expand_paths(patterns: list[str]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for p in patterns:
+        part = (p or "").strip().strip('"').strip("'")
+        if not part:
+            continue
+        matches = sorted(Path().glob(part))
+        if matches:
+            for m in matches:
+                rp = m.resolve()
+                if rp not in seen:
+                    seen.add(rp)
+                    out.append(rp)
+            continue
+        rp = Path(part).resolve()
+        if rp not in seen:
+            seen.add(rp)
+            out.append(rp)
+    return out
+
+
+def _load_parquet_df(paths: list[Path]) -> pd.DataFrame:
+    if not paths:
+        raise SystemExit("No source parquet files were provided.")
+    frames: list[pd.DataFrame] = []
+    for p in paths:
+        if not p.exists():
+            raise SystemExit(f"Source parquet not found: {p}")
+        frames.append(pd.read_parquet(p))
+    if not frames:
+        raise SystemExit("No readable parquet frames loaded from source paths.")
+    return pd.concat(frames, ignore_index=True)
+
+
+def _sample_extra_rows(source_df: pd.DataFrame, n: int, *, seed: int) -> pd.DataFrame:
+    if n <= 0:
+        return source_df.iloc[0:0].copy()
+    if source_df.empty:
+        raise SystemExit("Source dataframe is empty; cannot sample extra rows.")
+    replace = n > len(source_df)
+    return source_df.sample(n=n, replace=replace, random_state=seed).reset_index(drop=True)
+
+
+def _write_df_atomic(df: pd.DataFrame, out_path: Path, compression: str | None) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    df.to_parquet(tmp_path, engine="pyarrow", index=False, compression=compression)
+    tmp_path.replace(out_path)
+
+
+def _expand_subsets_plan_b(args: argparse.Namespace, compression: str | None) -> int:
+    # Plan B target counts (40k preset), while keeping synthetic_cot_1000 unchanged.
+    # This means we only expand non-synthetic subsets.
+    target_rows_by_file = {
+        "sharegpt_4000.parquet": 6000,
+        "dolly_1600.parquet": 2800,
+        "code_alpaca_800.parquet": 6000,
+        "gsm8k_800.parquet": 10000,
+        "fineweb_800.parquet": 1200,
+        "synthetic_cot_1000.parquet": None,
+    }
+    source_patterns_by_file = {
+        "sharegpt_4000.parquet": args.sharegpt_source,
+        "dolly_1600.parquet": args.dolly_source,
+        "code_alpaca_800.parquet": args.codealpaca_source,
+        "gsm8k_800.parquet": args.gsm8k_source,
+        "fineweb_800.parquet": args.fineweb_source,
+    }
+
+    subsets_dir = Path(args.subsets_dir).resolve()
+    if not subsets_dir.exists():
+        raise SystemExit(f"subsets dir not found: {subsets_dir}")
+
+    print(f"Expanding subsets under: {subsets_dir}")
+    for fname, target_rows in target_rows_by_file.items():
+        subset_path = subsets_dir / fname
+        if not subset_path.exists():
+            raise SystemExit(f"subset parquet not found: {subset_path}")
+
+        cur_df = pd.read_parquet(subset_path)
+        cur_n = len(cur_df)
+        if target_rows is None:
+            print(f"- {fname}: keep unchanged at {cur_n} rows")
+            continue
+        if cur_n >= target_rows:
+            print(f"- {fname}: already {cur_n} rows (target {target_rows}), skip")
+            continue
+
+        src_patterns = source_patterns_by_file[fname]
+        src_paths = _expand_paths(src_patterns)
+        src_df = _load_parquet_df(src_paths)
+        need_n = target_rows - cur_n
+        extra = _sample_extra_rows(src_df, need_n, seed=args.seed)
+        out_df = pd.concat([cur_df, extra], ignore_index=True)
+        _write_df_atomic(out_df, subset_path, compression=compression)
+        print(f"- {fname}: {cur_n} -> {len(out_df)} (+{need_n})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
@@ -218,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Input .json / .jsonl path (default: read stdin as JSONL)",
     )
-    p.add_argument("-o", "--output", required=True, help="Output .parquet file or directory (when partitioning)")
+    p.add_argument("-o", "--output", required=False, help="Output .parquet file or directory (when partitioning)")
     p.add_argument(
         "--input-format",
         choices=("auto", "json", "jsonl"),
@@ -249,8 +349,68 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="Disable struct normalization (ShareGPT-style mixed keys / dict-vs-string fields will often fail)",
     )
+    p.add_argument(
+        "--expand-subsets-plan-b",
+        action="store_true",
+        help=(
+            "Expand parquet files under --subsets-dir to Plan-B target sizes while keeping "
+            "synthetic_cot_1000.parquet unchanged."
+        ),
+    )
+    p.add_argument(
+        "--subsets-dir",
+        default="data/subsets",
+        help="Directory containing subset parquet files.",
+    )
+    p.add_argument("--seed", type=int, default=42, help="RNG seed for parquet row sampling.")
+    p.add_argument(
+        "--sharegpt-source",
+        nargs="+",
+        default=[],
+        help="Source parquet path(s)/glob(s) for expanding sharegpt_4000.parquet.",
+    )
+    p.add_argument(
+        "--dolly-source",
+        nargs="+",
+        default=[],
+        help="Source parquet path(s)/glob(s) for expanding dolly_1600.parquet.",
+    )
+    p.add_argument(
+        "--codealpaca-source",
+        nargs="+",
+        default=[],
+        help="Source parquet path(s)/glob(s) for expanding code_alpaca_800.parquet.",
+    )
+    p.add_argument(
+        "--gsm8k-source",
+        nargs="+",
+        default=[],
+        help="Source parquet path(s)/glob(s) for expanding gsm8k_800.parquet.",
+    )
+    p.add_argument(
+        "--fineweb-source",
+        nargs="+",
+        default=[],
+        help="Source parquet path(s)/glob(s) for expanding fineweb_800.parquet.",
+    )
     args = p.parse_args(argv)
     compression = None if args.compression.lower() in {"none", "null"} else args.compression
+    if args.expand_subsets_plan_b:
+        required_sources = {
+            "sharegpt": args.sharegpt_source,
+            "dolly": args.dolly_source,
+            "codealpaca": args.codealpaca_source,
+            "gsm8k": args.gsm8k_source,
+            "fineweb": args.fineweb_source,
+        }
+        missing = [k for k, v in required_sources.items() if not v]
+        if missing:
+            miss = ", ".join(missing)
+            raise SystemExit(f"Missing required source args for plan-b expansion: {miss}")
+        return _expand_subsets_plan_b(args, compression)
+
+    if not args.output:
+        p.error("the following arguments are required in convert mode: -o/--output")
     if args.input is None:
         if args.input_format not in {"auto", "jsonl"}:
             p.error("stdin mode only supports JSONL; use --input-format jsonl or auto.")
@@ -317,3 +477,8 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+"""
+python scripts/json_to_parquet.py --expand-subsets-plan-b --subsets-dir "data/subsets" --sharegpt-source "data/ShareGPT/ShareGPT_html_cleaned.parquet" --dolly-source "data/dolly/dolly.parquet" --codealpaca-source "data/CodeAlpaca/code_alpaca.parquet" --gsm8k-source "data/gsm8k/gsm8k_train-00000-of-00001.parquet" --fineweb-source "data/FineWeb/fineweb_000_00000.parquet" --seed 42
+"""

@@ -171,14 +171,6 @@ class GRPOConfig(trl.GRPOConfig):
         default=None,
         metadata={"help": ("The group to store runs under.")},
     )
-    hf_local_dir: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Optional local directory to download the base model snapshot into (HF Hub). "
-            "If set and model_name_or_path is a HF repo id, we will snapshot_download to this folder and load locally. "
-            "Example: /root/models/Qwen3.5-4B"
-        },
-    )
 
 
 @dataclass
@@ -255,14 +247,6 @@ class SFTConfig(trl.SFTConfig):
         default=None,
         metadata={
             "help": "Optional cache directory for base model downloads (HF/Unsloth). If set, downloads are stored here instead of the default HF cache."
-        },
-    )
-    hf_local_dir: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "Optional local directory to download the base model snapshot into (HF Hub). "
-            "If set and model_name_or_path is a HF repo id, we will snapshot_download to this folder and load locally. "
-            "Example: /root/models/Qwen3.5-4B"
         },
     )
     unsloth_lora_r: int = field(default=16, metadata={"help": "Unsloth LoRA rank (r)."})

@@ -65,7 +65,6 @@ from open_r1.configs import ScriptArguments, SFTConfig
 from open_r1.utils import get_dataset, get_model, get_tokenizer
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
-from open_r1.utils.hf_download_utils import resolve_hf_model_to_local_dir
 
 # Optional Unsloth integration (CUDA-only)
 try:
@@ -428,41 +427,6 @@ def main(script_args, training_args, model_args):
         logger.info("No chat template provided, defaulting to ChatML.")
         model, tokenizer = setup_chat_format(model, tokenizer, format="chatml")
 
-    # Ensure eos_token from ScriptArguments actually takes effect.
-    # TRL/Transformers may not automatically apply it for local chat datasets.
-    try:
-        desired_eos = getattr(script_args, "eos_token", None)
-        if isinstance(desired_eos, str) and desired_eos.strip():
-            desired_eos = desired_eos.strip()
-            if tokenizer.eos_token != desired_eos:
-                if desired_eos not in tokenizer.get_vocab():
-                    tokenizer.add_special_tokens({"eos_token": desired_eos})
-                    try:
-                        model.resize_token_embeddings(len(tokenizer))
-                    except Exception:
-                        pass
-                else:
-                    tokenizer.eos_token = desired_eos
-
-            logger.info(
-                "Effective eos_token=%r eos_token_id=%s (requested=%r)",
-                tokenizer.eos_token,
-                getattr(tokenizer, "eos_token_id", None),
-                desired_eos,
-            )
-    except Exception as e:
-        logger.warning("Could not apply eos_token override: %s", e)
-
-    # Log effective chat template for verification.
-    try:
-        tpl = getattr(tokenizer, "chat_template", None)
-        if isinstance(tpl, str) and tpl:
-            logger.info("Effective chat_template is set (len=%d).", len(tpl))
-        else:
-            logger.info("Effective chat_template is NOT set.")
-    except Exception:
-        pass
-
     ############################
     # Initialize the SFT Trainer
     ############################
@@ -548,21 +512,6 @@ if __name__ == "__main__":
     if getattr(model_args, "model_name_or_path", None) is None:
         model_args.model_name_or_path = "Qwen/Qwen3.5-9B"
         print(f"Defaulting model to {model_args.model_name_or_path}")
-
-    # Optional: force HF snapshot to a user-chosen local directory, then load locally.
-    # This gives full control over the saved location for HF downloads.
-    try:
-        resolved = resolve_hf_model_to_local_dir(
-            str(model_args.model_name_or_path),
-            local_dir=getattr(training_args, "hf_local_dir", None),
-            revision=getattr(model_args, "model_revision", None),
-            cache_dir=getattr(training_args, "model_cache_dir", None) or getattr(model_args, "cache_dir", None),
-        )
-        if resolved.local_dir != model_args.model_name_or_path:
-            print(f"Downloaded HF model snapshot to: {resolved.local_dir}")
-            model_args.model_name_or_path = resolved.local_dir
-    except Exception as e:
-        print(f"HF local_dir download skipped: {e}")
 
     # If CUDA is available and Unsloth is installed, default to using it unless explicitly disabled.
     if torch.cuda.is_available():
