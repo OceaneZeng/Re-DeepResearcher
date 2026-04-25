@@ -140,7 +140,7 @@ def generate_cot(row: pd.Series) -> str:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = client.chat.completions.create(
-                model="qwen3-max-2026-01-23",
+                model="qwen3.5-397b-a17b",
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = response.choices[0].message.content
