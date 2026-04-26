@@ -382,3 +382,62 @@ class GRPOScriptArguments(ScriptArguments):
         default=4096,
         metadata={"help": "Minimum number of characters in completion."},
     )
+
+
+@dataclass
+class GSPOConfig(trl.GRPOConfig):
+    """
+    GSPO trainer config.
+
+    We inherit from `trl.GRPOConfig` intentionally to keep compatibility with
+    existing recipes and to support environments where TRL exposes GSPOTrainer
+    but reuses GRPO-like config fields.
+    """
+
+    benchmarks: list[str] = field(
+        default_factory=lambda: [],
+        metadata={"help": "The benchmarks to run after training."},
+    )
+    callbacks: list[str] = field(
+        default_factory=lambda: [],
+        metadata={"help": "The callbacks to run during training."},
+    )
+    chat_template: Optional[str] = field(default=None, metadata={"help": "The chat template to use."})
+    hub_model_revision: Optional[str] = field(
+        default="main", metadata={"help": "The Hub model branch to push the model to."}
+    )
+    num_completions_to_print: int = field(default=0, metadata={"help": "Number of completions to print."})
+    overwrite_hub_revision: bool = field(default=False, metadata={"help": "Whether to overwrite the Hub revision."})
+    push_to_hub_revision: bool = field(default=False, metadata={"help": "Whether to push to a Hub revision/branch."})
+    system_prompt: Optional[str] = field(
+        default=None,
+        metadata={"help": "The optional system prompt to use."},
+    )
+    wandb_log_unique_prompts: bool = field(
+        default=True,
+        metadata={
+            "help": ("Whether to log the unique prompts to wandb. This will create a new run for each unique prompt.")
+        },
+    )
+    wandb_entity: Optional[str] = field(
+        default=None,
+        metadata={"help": ("The entity to store runs under.")},
+    )
+    wandb_project: Optional[str] = field(
+        default=None,
+        metadata={"help": ("The project to store runs under.")},
+    )
+    wandb_run_group: Optional[str] = field(
+        default=None,
+        metadata={"help": ("The group to store runs under.")},
+    )
+
+
+@dataclass
+class GSPOScriptArguments(GRPOScriptArguments):
+    """
+    Script arguments for the GSPO training script.
+
+    This intentionally mirrors GRPO script arguments so existing reward and
+    dataset pipelines can be reused directly when switching experiments.
+    """

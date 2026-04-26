@@ -173,6 +173,7 @@ Currently, the following tasks are supported:
 
 * Supervised Fine-Tuning `sft`
 * Group Relative Policy Optimization `grpo`
+* Group Sequence Policy Optimization `gspo` (requires a TRL version with `GSPOTrainer`)
 
 > [!TIP]
 > If you scale up/down the number of GPUs, we recommend also scaling up the per-device batch size or number of gradient accumulation steps to keep the global batch size constant.
@@ -277,6 +278,17 @@ sbatch --nodes=2 slurm/train.slurm --model Qwen2.5-1.5B-Instruct --task grpo --c
 ```
 
 See the [Launching jobs on a Slurm cluster](#launching-jobs-on-a-slurm-cluster) section for more details.
+
+### GSPO
+
+If your installed TRL version exposes `GSPOTrainer`, you can run GSPO with the same data/reward pipeline:
+
+```shell
+ACCELERATE_LOG_LEVEL=info \
+    accelerate launch --config_file recipes/accelerate_configs/zero3.yaml \
+    src/open_r1/gspo.py --config recipes/Qwen2.5-1.5B-Instruct/gspo/config_demo.yaml \
+    --vllm_mode colocate
+```
 
 #### GRPO dataset filtering
 
