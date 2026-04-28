@@ -26,7 +26,7 @@ python src/open_r1/utils/upload_details.py \
 from dataclasses import dataclass, field
 from typing import List
 
-from datasets import load_dataset
+from data import load_dataset
 from transformers import HfArgumentParser
 
 

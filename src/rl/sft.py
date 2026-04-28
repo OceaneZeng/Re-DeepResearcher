@@ -17,8 +17,7 @@ Supervised fine-tuning script for decoder language models.
 
 Usage:
 
-# One 1 node of 8 x H100s
-accelerate launch --config_file=recipes/accelerate_configs/ddp.yaml src/open_r1/sft.py \
+accelerate launch --config_file=recipes/accelerate_configs/ddp.yaml src/rl/sft.py \
     --model_name_or_path open-r1/Qwen2.5-Math-7B-RoPE-300k \
     --dataset_name open-r1/Mixture-of-Thoughts \
     --dataset_config all \
@@ -61,14 +60,14 @@ import torch
 
 from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config, setup_chat_format
 
-from open_r1.configs import ScriptArguments, SFTConfig
-from open_r1.utils import get_dataset, get_model, get_tokenizer
-from open_r1.utils.callbacks import get_callbacks
-from open_r1.utils.wandb_logging import init_wandb_training
+from rl.configs import ScriptArguments, SFTConfig
+from rl.utils import get_dataset, get_model, get_tokenizer
+from rl.utils.callbacks import get_callbacks
+from rl.utils.wandb_logging import init_wandb_training
 
 # Optional Unsloth integration (CUDA-only)
 try:
-    from open_r1.utils.unsloth_utils import UnslothConfig, load_unsloth_model_and_tokenizer
+    from rl.utils.unsloth_utils import UnslothConfig, load_unsloth_model_and_tokenizer
 except Exception:  # pragma: no cover
     UnslothConfig = None  # type: ignore
     load_unsloth_model_and_tokenizer = None  # type: ignore
@@ -128,6 +127,7 @@ def _try_load_local_parquet_dataset(script_args: ScriptArguments) -> datasets.Da
     - dataset_name as a glob pattern (e.g. `data/**/*.parquet`)
     - dataset_name = "data": load all `data/**/*.parquet` under repo CWD
     - dataset_name = "local_parquet": load all `data/**/*.parquet` under repo CWD
+    - dataset_name = "data_subsets" / "subsets": load all `data/subsets/**/*.parquet` under repo CWD
     """
     dataset_name = getattr(script_args, "dataset_name", None)
     if not isinstance(dataset_name, str) or not dataset_name:
@@ -276,6 +276,13 @@ def _try_load_local_parquet_dataset(script_args: ScriptArguments) -> datasets.Da
         parquet_files = sorted(glob.glob(os.path.join(root, "**", "*.parquet"), recursive=True))
         return _load_parquet_files(parquet_files, hint=root)
 
+    if dataset_name in {"data_subsets", "subsets", "subsets_parquet"}:
+        root = os.path.join(os.getcwd(), "data", "subsets")
+        if not os.path.isdir(root):
+            return None
+        parquet_files = sorted(glob.glob(os.path.join(root, "**", "*.parquet"), recursive=True))
+        return _load_parquet_files(parquet_files, hint=root)
+
     p = dataset_name
     # Glob support, e.g. `data/**/*.parquet`
     if any(ch in p for ch in ["*", "?", "["]):
@@ -289,6 +296,48 @@ def _try_load_local_parquet_dataset(script_args: ScriptArguments) -> datasets.Da
         parquet_files = sorted(glob.glob(os.path.join(p, "**", "*.parquet"), recursive=True))
         return _load_parquet_files(parquet_files, hint=p)
     return None
+
+
+def _synthetic_cot_to_messages(example: dict) -> dict:
+    """Build chat `messages` from MMLU-style rows with `question` + `cot_content` (or similar)."""
+    q_key = "question" if "question" in example else ("prompt" if "prompt" in example else None)
+    if q_key is None:
+        raise ValueError("Expected `question` or `prompt` in example")
+
+    def _is_nullish(x) -> bool:
+        if x is None:
+            return True
+        if isinstance(x, float) and x != x:  # NaN
+            return True
+        try:
+            if isinstance(x, str) and not x.strip():
+                return True
+        except Exception:
+            pass
+        return False
+
+    question = str(example.get(q_key, "") or "").strip()
+    options = example.get("options", None)
+    if not _is_nullish(options):
+        opt_s = str(options).strip()
+        if opt_s:
+            user_content = f"{question}\n\nOptions:\n{opt_s}"
+        else:
+            user_content = question
+    else:
+        user_content = question
+
+    cot = example.get("cot_content")
+    if _is_nullish(cot):
+        cot = example.get("response", example.get("output", example.get("completion", "")))
+    assistant_content = str(cot or "").strip()
+
+    return {
+        "messages": [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": assistant_content},
+        ]
+    }
 
 
 def _sharegpt_conversations_to_messages(example: dict) -> dict:
@@ -374,6 +423,17 @@ def main(script_args, training_args, model_args):
         if "messages" not in cols and "conversations" in cols:
             logger.info(f"Detected ShareGPT `conversations` in split={split}; converting to `messages`.")
             dataset[split] = dataset[split].map(_sharegpt_conversations_to_messages)
+        elif (
+            "messages" not in cols
+            and "cot_content" in cols
+            and ("question" in cols or "prompt" in cols)
+        ):
+            logger.info(
+                f"Detected synthetic CoT columns (`cot_content` + question/prompt) in split={split}; "
+                "converting to `messages` for SFT."
+            )
+            to_drop = list(dataset[split].column_names)
+            dataset[split] = dataset[split].map(_synthetic_cot_to_messages, remove_columns=to_drop)
 
     # If we have a chat dataset with `messages`, ensure TRL reads the right column.
     # TRL's SFTTrainer defaults to `dataset_text_field='text'`; for chat datasets it should be `messages`.
@@ -495,7 +555,27 @@ def main(script_args, training_args, model_args):
         trainer.push_to_hub(**kwargs)
 
 
+def _normalize_trl_config_argv() -> None:
+    """TrlParser only loads YAML when argv has a separate token ``--config``.
+    A single token ``--config=path.yaml`` (e.g. from accelerate) is otherwise ignored.
+    """
+    new_argv: list[str] = []
+    for a in sys.argv:
+        if a.startswith("--config=") and len(a) > len("--config="):
+            new_argv.append("--config")
+            cfg_path = a.split("=", 1)[1].strip()
+            if cfg_path:
+                new_argv.append(cfg_path)
+            else:
+                new_argv.append(a)
+        else:
+            new_argv.append(a)
+    if new_argv != list(sys.argv):
+        sys.argv[:] = new_argv
+
+
 if __name__ == "__main__":
+    _normalize_trl_config_argv()
     parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
 
@@ -504,7 +584,7 @@ if __name__ == "__main__":
     if getattr(script_args, "dataset_name", None) is None and getattr(script_args, "dataset_mixture", None) is None:
         raise ValueError(
             "Either `dataset_name` or `dataset_mixture` must be provided in the config file. "
-            "For local parquet-backed SFT, set dataset_name to `data` (or a parquet path / glob)."
+            "For local parquet-backed SFT, set `dataset_name` to `data_subsets` / `data/subsets` / a `.parquet` path / a glob."
         )
 
     # Provide conservative local defaults when running locally and arguments are omitted.

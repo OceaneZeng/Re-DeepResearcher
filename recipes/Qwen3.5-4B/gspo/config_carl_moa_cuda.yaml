@@ -1,5 +1,10 @@
+# Qwen3.5-4B GSPO config aligned with CARL-MoA.
+# Run:
+#   accelerate launch --config_file recipes/accelerate_configs/ddp.yaml src/rl/gspo.py \
+#     --config recipes/Qwen3.5-4B/gspo/config_carl_moa_cuda.yaml
+
 # Model arguments
-model_name_or_path: /home/featurize/work/model/Qwen3.5-4B-sft-unsloth
+model_name_or_path: model/Qwen3.5-4B-sft-unsloth
 model_revision: null
 torch_dtype: bfloat16
 attn_implementation: flash_attention_2
@@ -7,7 +12,7 @@ attn_implementation: flash_attention_2
 # Data training arguments
 dataset_name: data/subsets/sft/gspo_sft_unified_v2.parquet
 dataset_prompt_column: prompt
-system_prompt: "You are CARL-MoA Assistant. Use modular reasoning (solver -> critic -> refiner; call tools only when needed), and output strictly as <think>...</think> then <answer>...</answer>."
+system_prompt: "You are CARL-MoA Assistant. Use modular reasoning (solver -> critic -> refiner; tool calls only when needed), and output strictly as <think>...</think> then <answer>...</answer>."
 
 # GSPO trainer config
 bf16: true
@@ -17,25 +22,21 @@ gradient_accumulation_steps: 4
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
-hub_model_id: Qwen3.5-4B-sft-unsloth-Open-R1-GSPO
-hub_strategy: every_save
-learning_rate: 2.0e-05
+learning_rate: 1.0e-5
 log_completions: true
-log_level: info
 logging_first_step: true
-logging_steps: 1
+logging_steps: 2
 logging_strategy: steps
 lr_scheduler_type: cosine
-max_prompt_length: 512
+max_prompt_length: 768
 max_completion_length: 1024
-max_steps: -1
-num_generations: 16
+num_generations: 8
 num_train_epochs: 1
-output_dir: model/Qwen3.5-4B-sft-unsloth-Open-R1-GSPO
+output_dir: model/Qwen3.5-4B-gspo-carl-moa
 overwrite_output_dir: true
-per_device_eval_batch_size: 16
-per_device_train_batch_size: 16
-push_to_hub: true
+per_device_eval_batch_size: 4
+per_device_train_batch_size: 4
+push_to_hub: false
 report_to:
   - wandb
 reward_funcs:
@@ -48,7 +49,7 @@ reward_weights:
   - 1.0
   - 0.3
   - 0.2
-save_strategy: "epoch"
+save_strategy: epoch
 save_total_limit: 1
 seed: 42
 warmup_ratio: 0.1

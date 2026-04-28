@@ -21,7 +21,7 @@ of samples and parallelization levels.
 Each sample is a CodeForces problem with a gold standard solution that is executed against a set of public test cases.
 """
 
-from datasets import load_dataset
+from data import load_dataset
 import time
 from tqdm.auto import tqdm
 

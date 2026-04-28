@@ -7,7 +7,7 @@ dependencies = [
   "accelerate>=1.4.0",
   "datasets>=3.2.0",
   "einops>=0.8.0",
-  "huggingface-hub[cli,hf_xet]>=0.31.0,<2.0",
+  "huggingface-hub[cli,hf-xet]>=0.31.0,<2.0",
   "openai>=2.32.0",
   "packaging>=23.0",
   "pandas>=3.0.2",
@@ -60,3 +60,6 @@ langchain = [
 [build-system]
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

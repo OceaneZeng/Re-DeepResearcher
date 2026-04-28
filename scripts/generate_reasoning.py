@@ -7,7 +7,7 @@ import random
 from asyncio import Lock
 from typing import Set
 
-from datasets import load_dataset
+from data import load_dataset
 from tqdm.asyncio import tqdm
 
 import aiofiles

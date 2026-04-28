@@ -60,10 +60,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_model_and_tokenizer(model_path: str, base_model_path: str | None = None):
-    torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    model_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     device_map = "auto" if torch.cuda.is_available() else None
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -73,7 +74,7 @@ def load_model_and_tokenizer(model_path: str, base_model_path: str | None = None
             model = AutoPeftModelForCausalLM.from_pretrained(
                 model_path,
                 trust_remote_code=True,
-                torch_dtype=torch_dtype,
+                dtype=model_dtype,
                 device_map=device_map,
             )
         except Exception:
@@ -84,7 +85,7 @@ def load_model_and_tokenizer(model_path: str, base_model_path: str | None = None
             base_model = AutoModelForCausalLM.from_pretrained(
                 base_model_path,
                 trust_remote_code=True,
-                torch_dtype=torch_dtype,
+                dtype=model_dtype,
                 device_map=device_map,
             )
             model = PeftModel.from_pretrained(base_model, model_path)
@@ -92,7 +93,7 @@ def load_model_and_tokenizer(model_path: str, base_model_path: str | None = None
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 trust_remote_code=True,
-                torch_dtype=torch_dtype,
+                dtype=model_dtype,
                 device_map=device_map,
             )
 

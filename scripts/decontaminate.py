@@ -92,7 +92,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    from datasets import load_dataset, Dataset
+    from data import load_dataset, Dataset
 
     # Load the dataset to check for contamination
     ds = load_dataset(args.dataset, name=args.config, split=args.split)

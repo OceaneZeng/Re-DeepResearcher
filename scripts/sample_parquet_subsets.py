@@ -8,7 +8,7 @@ import glob
 import os
 from typing import Iterable, List
 
-from datasets import Dataset, load_dataset
+from data import Dataset, load_dataset
 
 
 def _expand_files(patterns: Iterable[str]) -> List[str]:

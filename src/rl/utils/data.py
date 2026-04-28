@@ -11,6 +11,35 @@ from ..configs import ScriptArguments
 logger = logging.getLogger(__name__)
 
 
+def _try_load_local_parquet_dataset(dataset_name: str) -> DatasetDict | None:
+    """Load local parquet via file/dir/glob patterns."""
+    if not isinstance(dataset_name, str) or not dataset_name:
+        return None
+
+    def _as_datasetdict(files: list[str]) -> DatasetDict | None:
+        files = [f for f in files if os.path.isfile(f) and f.lower().endswith(".parquet")]
+        if not files:
+            return None
+        logger.info(f"Loading local parquet dataset ({len(files)} files)")
+        return datasets.load_dataset("parquet", data_files={"train": sorted(files)})
+
+    # Direct file
+    if os.path.isfile(dataset_name) and dataset_name.lower().endswith(".parquet"):
+        return _as_datasetdict([dataset_name])
+
+    # Directory
+    if os.path.isdir(dataset_name):
+        matches = glob.glob(os.path.join(dataset_name, "**", "*.parquet"), recursive=True)
+        return _as_datasetdict(matches)
+
+    # Glob pattern
+    if any(ch in dataset_name for ch in ["*", "?", "["]):
+        matches = glob.glob(dataset_name, recursive=True)
+        return _as_datasetdict(matches)
+
+    return None
+
+
 def get_dataset(args: ScriptArguments) -> DatasetDict:
     """Load a dataset or a mixture of datasets based on the configuration.
 
@@ -22,6 +51,10 @@ def get_dataset(args: ScriptArguments) -> DatasetDict:
     """
     if args.dataset_name and not args.dataset_mixture:
         logger.info(f"Loading dataset: {args.dataset_name}")
+
+        local_ds = _try_load_local_parquet_dataset(args.dataset_name)
+        if local_ds is not None:
+            return local_ds
 
         # If the requested dataset is the open-r1 Mixture-of-Thoughts and there are local parquet files
         # in the repository `data/` directory, prefer loading the local files so we can run offline/local.

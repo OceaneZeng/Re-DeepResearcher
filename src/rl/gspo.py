@@ -225,7 +225,25 @@ def main(script_args, training_args, model_args):
         trainer.push_to_hub(**kwargs)
 
 
+def _normalize_trl_config_argv() -> None:
+    """TrlParser only loads YAML when argv has a separate token ``--config``."""
+    new_argv: list[str] = []
+    for a in sys.argv:
+        if a.startswith("--config=") and len(a) > len("--config="):
+            new_argv.append("--config")
+            cfg_path = a.split("=", 1)[1].strip()
+            if cfg_path:
+                new_argv.append(cfg_path)
+            else:
+                new_argv.append(a)
+        else:
+            new_argv.append(a)
+    if new_argv != list(sys.argv):
+        sys.argv[:] = new_argv
+
+
 if __name__ == "__main__":
+    _normalize_trl_config_argv()
     parser = TrlParser((GSPOScriptArguments, GSPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
     try:
