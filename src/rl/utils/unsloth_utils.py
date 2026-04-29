@@ -20,6 +20,7 @@ from typing import Any, Optional, Tuple
 
 import os
 import torch
+from transformers import AutoConfig
 
 
 @dataclass
@@ -92,8 +93,35 @@ def load_unsloth_model_and_tokenizer(
     env_offline = os.environ.get("HF_HUB_OFFLINE") or os.environ.get("TRANSFORMERS_OFFLINE")
     local_files_only = bool(cfg.local_files_only) or (str(env_offline).strip() in {"1", "true", "True", "YES", "yes"})
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name_or_path=model_name_or_path,
+    if local_files_only and os.path.isdir(model_name_or_path):
+        cfg_path = os.path.join(model_name_or_path, "config.json")
+        if not os.path.isfile(cfg_path):
+            raise RuntimeError(
+                f"Unsloth local load requested, but config.json is missing under: {model_name_or_path}"
+            )
+
+    # Pre-validate model config so unsupported/corrupt snapshots fail with
+    # actionable information before entering Unsloth internals.
+    try:
+        cfg_obj = AutoConfig.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=bool(trust_remote_code),
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
+        )
+        arch = getattr(cfg_obj, "architectures", None)
+        print(
+            f"[unsloth] resolved model={model_name_or_path!r} "
+            f"model_type={getattr(cfg_obj, 'model_type', None)!r} architectures={arch!r}"
+        )
+    except Exception as e:
+        raise RuntimeError(
+            "Failed to load model config before Unsloth init. "
+            f"model={model_name_or_path!r} local_files_only={local_files_only} cache_dir={cache_dir!r}. "
+            f"Original error: {e}"
+        ) from e
+
+    base_kwargs = dict(
         max_seq_length=max_seq_length,
         dtype=torch_dtype,
         load_in_4bit=bool(cfg.load_in_4bit),
@@ -101,6 +129,19 @@ def load_unsloth_model_and_tokenizer(
         local_files_only=local_files_only,
         cache_dir=cache_dir,
     )
+
+    # Compatibility: different Unsloth versions may expect either `model_name`
+    # or `model_name_or_path`. Try both deterministically.
+    try:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_name_or_path,
+            **base_kwargs,
+        )
+    except TypeError:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name_or_path=model_name_or_path,
+            **base_kwargs,
+        )
 
     target_modules = cfg.lora_target_modules or _default_qwen_lora_targets()
 

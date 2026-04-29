@@ -63,6 +63,7 @@ from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config, setup_chat_
 from rl.configs import ScriptArguments, SFTConfig
 from rl.utils import get_dataset, get_model, get_tokenizer
 from rl.utils.callbacks import get_callbacks
+from rl.utils.hf_download_utils import resolve_hf_model_to_local_dir
 from rl.utils.wandb_logging import init_wandb_training
 
 # Optional Unsloth integration (CUDA-only)
@@ -374,6 +375,22 @@ def _sharegpt_conversations_to_messages(example: dict) -> dict:
     return {"messages": messages}
 
 
+def _messages_to_text(example: dict) -> dict:
+    """Flatten chat-style messages into a single text string for Unsloth SFT path."""
+    msgs = example.get("messages", [])
+    if not isinstance(msgs, list):
+        return {"text": str(msgs)}
+
+    parts: list[str] = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role", "user"))
+        content = str(m.get("content", "") or "")
+        parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+    return {"text": "\n".join(parts)}
+
+
 def main(script_args, training_args, model_args):
     set_seed(training_args.seed)
 
@@ -435,6 +452,19 @@ def main(script_args, training_args, model_args):
             to_drop = list(dataset[split].column_names)
             dataset[split] = dataset[split].map(_synthetic_cot_to_messages, remove_columns=to_drop)
 
+    # For Unsloth SFT, some versions expect a plain text field during tokenization.
+    # Convert chat `messages` into serialized text to avoid tokenizer type errors.
+    if bool(getattr(training_args, "use_unsloth", False)):
+        for split in list(dataset.keys()):
+            cols = set(dataset[split].column_names)
+            if "messages" in cols:
+                logger.info(
+                    "use_unsloth=true and chat dataset detected (`messages`) in split=%s; "
+                    "serializing messages -> text for robust Unsloth tokenization.",
+                    split,
+                )
+                dataset[split] = dataset[split].map(_messages_to_text, remove_columns=list(dataset[split].column_names))
+
     # If we have a chat dataset with `messages`, ensure TRL reads the right column.
     # TRL's SFTTrainer defaults to `dataset_text_field='text'`; for chat datasets it should be `messages`.
     try:
@@ -443,6 +473,9 @@ def main(script_args, training_args, model_args):
         if "messages" in train_cols and getattr(training_args, "dataset_text_field", "text") == "text":
             logger.info("Detected chat dataset (`messages`); setting training_args.dataset_text_field='messages'.")
             training_args.dataset_text_field = "messages"
+        elif "text" in train_cols:
+            training_args.dataset_text_field = "text"
+            logger.info("Using dataset_text_field='text'.")
     except Exception:
         pass
 
@@ -578,6 +611,31 @@ if __name__ == "__main__":
     _normalize_trl_config_argv()
     parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
+
+    # Optionally materialize HF model into a deterministic local directory before loading.
+    # This is especially helpful for Unsloth, which is more reliable with local model dirs.
+    try:
+        hf_local_dir = getattr(training_args, "hf_local_dir", None)
+        if not hf_local_dir:
+            cache_dir = getattr(training_args, "model_cache_dir", None)
+            model_ref = str(getattr(model_args, "model_name_or_path", "") or "")
+            if cache_dir and model_ref and not os.path.isdir(model_ref) and "/" in model_ref:
+                hf_local_dir = os.path.join(cache_dir, model_ref.replace("/", "__"))
+
+        resolved = resolve_hf_model_to_local_dir(
+            str(model_args.model_name_or_path),
+            local_dir=hf_local_dir,
+            revision=getattr(model_args, "model_revision", None),
+            cache_dir=getattr(training_args, "model_cache_dir", None) or getattr(model_args, "cache_dir", None),
+        )
+        if resolved.local_dir != model_args.model_name_or_path:
+            print(f"Downloaded HF model snapshot to: {resolved.local_dir}")
+            model_args.model_name_or_path = resolved.local_dir
+            # Prefer local reads once snapshot is materialized.
+            if bool(getattr(training_args, "use_unsloth", False)):
+                training_args.unsloth_local_files_only = True
+    except Exception as e:
+        print(f"HF local_dir download skipped: {e}")
 
     # Normalize dataset selection from the config file: require one of the two supported forms.
     # This keeps the config file as the source of truth while tolerating parser/version quirks.

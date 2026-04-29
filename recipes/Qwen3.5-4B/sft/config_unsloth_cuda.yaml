@@ -32,7 +32,7 @@ chat_template: |
 #   data/subsets/sft/logic/*.parquet
 #   data/subsets/sft/code/*.parquet
 # NOTE: Multiple files are fine; no need to merge into one file, but schema should be consistent.
-dataset_name: data/subsets/sft/gspo_sft_unified_v2.parquet
+dataset_name: /home/featurize/data/gspo_sft_unified_v1.parquet
 allow_mixed_parquet_schemas: false
 eos_token: <|im_end|>
 
@@ -40,6 +40,7 @@ eos_token: <|im_end|>
 # SFTConfig (training args)
 # -----------------
 output_dir: /home/featurize/work/model/Qwen3.5-4B-sft-unsloth
+model_cache_dir: /home/featurize/work/model/
 num_train_epochs: 2
 # RTX 3090 24GB: 4bit + grad checkpointing + small micro-batch
 per_device_train_batch_size: 1
@@ -69,7 +70,7 @@ optim: paged_adamw_8bit
 # -----------------
 use_unsloth: true
 unsloth_load_in_4bit: true
-unsloth_local_files_only: false
+unsloth_local_files_only: true
 unsloth_lora_r: 16
 unsloth_lora_alpha: 32
 unsloth_lora_dropout: 0.0
@@ -80,5 +81,5 @@ unsloth_lora_dropout: 0.0
 # -----------------
 # Optional: if you have a local base snapshot, set to that folder; otherwise rely on Hub cache
 # hf_local_dir: model/Qwen3.5-4B
-model_name_or_path: Qwen/Qwen3.5-4B
+model_name_or_path: /home/featurize/work/model/Qwen3.5-4B
 trust_remote_code: true

@@ -249,6 +249,13 @@ class SFTConfig(trl.SFTConfig):
             "help": "Optional cache directory for base model downloads (HF/Unsloth). If set, downloads are stored here instead of the default HF cache."
         },
     )
+    hf_local_dir: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Optional concrete local directory to materialize an HF model snapshot before training. "
+            "Useful for Unsloth stability and reproducible offline reloads."
+        },
+    )
     unsloth_lora_r: int = field(default=16, metadata={"help": "Unsloth LoRA rank (r)."})
     unsloth_lora_alpha: int = field(default=32, metadata={"help": "Unsloth LoRA alpha."})
     unsloth_lora_dropout: float = field(default=0.05, metadata={"help": "Unsloth LoRA dropout."})
